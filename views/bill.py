@@ -736,6 +736,15 @@ def parsear_fila_por_patrones(celdas) -> Optional[Dict[str, Any]]:
     if cods_uniq and not out["doc_legal"]:
         out["doc_legal"] = cods_uniq[0]
 
+    # === NORMALIZACIÓN NRO DOCUMENTO: quitar prefijo "CC-" y sufijo "/N" ===
+    #   CC-PF-SCTR-003507623/1  →  PF-SCTR-003507623
+    if out["nro_documento"]:
+        nd = out["nro_documento"]
+        if nd.upper().startswith("CC-"):
+            nd = nd[3:]
+        nd = re.sub(r"\/\d+\s*$", "", nd)
+        out["nro_documento"] = nd.strip("-")
+
     # 7) IDENTIFICACIÓN RUC / DNI — 11 dígitos (RUC 20xx / 10xx) o 8 dígitos
     rucs: List[str] = []
     for m in _RUC_RE.finditer(texto_global):
