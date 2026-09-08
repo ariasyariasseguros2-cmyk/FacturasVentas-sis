@@ -71,7 +71,7 @@ class LoginWindow(tk.Tk):
 
         self._paint_panel_gradient(panel_izq)
 
-        tk.Label(panel_izq, text="📊", bg=self.COLORS["panel_left_2"], fg="#ffffff",
+        tk.Label(panel_izq, text="", bg=self.COLORS["panel_left_2"], fg="#ffffff",
                  font=("Segoe UI", 36, "bold")).place(x=32, y=40)
         tk.Label(panel_izq, text="FacturasVentas", bg=self.COLORS["panel_left_2"], fg="#ffffff",
                  font=("Segoe UI", 22, "bold")).place(x=32, y=108)

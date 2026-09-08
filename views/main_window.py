@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Callable, Dict, Any, Optional
 
 from controllers.auth_controller import AuthController
+from views.bill import TableroFacturacion
 
 
 class MainWindow(tk.Tk):
@@ -243,32 +244,29 @@ class MainWindow(tk.Tk):
         self.contenedor = tk.Frame(parent, bg=self.COLORS["content_bg"])
         self.contenedor.pack(side="left", fill="both", expand=True)
 
-        cabecera = tk.Frame(self.contenedor, bg=self.COLORS["content_bg"])
-        cabecera.pack(fill="x", padx=24, pady=(22, 0))
-
-        tk.Label(cabecera, text="Panel Principal", bg=self.COLORS["content_bg"],
-                 fg=self.COLORS["text_primary"],
-                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        subt = f"Bienvenido(a), {self.usuario.get('nombre', 'Usuario')}  —  Hoy es {self._hoy_texto()}"
-        tk.Label(cabecera, text=subt, bg=self.COLORS["content_bg"],
-                 fg=self.COLORS["text_secondary"],
-                 font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
-
         self.stack = tk.Frame(self.contenedor, bg=self.COLORS["content_bg"])
-        self.stack.pack(fill="both", expand=True, padx=24, pady=(16, 22))
+        self.stack.pack(fill="both", expand=True, padx=24, pady=(22, 22))
 
         self._paginas = [
             self._crear_dashboard(self.stack),
+            TableroFacturacion(self.stack, bg=self.COLORS["content_bg"]),
         ]
-        for nombre in ("Facturas", "Pólizas", "Clientes", "Productos", "Usuarios", "Configuración"):
+        for nombre in ("Pólizas", "Clientes", "Productos", "Usuarios", "Configuración"):
             self._paginas.append(self._crear_pagina_generica(self.stack, nombre))
 
     def _cambiar_pagina(self, idx: int):
         self._marcar_menu_activo(idx)
         for w in self.stack.winfo_children():
             w.pack_forget()
+            try:
+                w.place_forget()
+            except Exception:
+                pass
         if 0 <= idx < len(self._paginas):
-            self._paginas[idx].pack(fill="both", expand=True)
+            pagina = self._paginas[idx]
+            pagina.pack(fill="both", expand=True)
+            pagina.lift()
+            self.update_idletasks()
 
     def _crear_card(self, parent: tk.Widget) -> tk.Frame:
         wrap = tk.Frame(parent, bg=self.COLORS["card_border"])
@@ -279,6 +277,17 @@ class MainWindow(tk.Tk):
 
     def _crear_dashboard(self, parent: tk.Widget) -> tk.Frame:
         page = tk.Frame(parent, bg=self.COLORS["content_bg"])
+
+        cabecera = tk.Frame(page, bg=self.COLORS["content_bg"])
+        cabecera.pack(fill="x")
+
+        tk.Label(cabecera, text="Panel Principal", bg=self.COLORS["content_bg"],
+                 fg=self.COLORS["text_primary"],
+                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        subt = f"Bienvenido(a), {self.usuario.get('nombre', 'Usuario')}  —  Hoy es {self._hoy_texto()}"
+        tk.Label(cabecera, text=subt, bg=self.COLORS["content_bg"],
+                 fg=self.COLORS["text_secondary"],
+                 font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 12))
 
         tarjetas_row = tk.Frame(page, bg=self.COLORS["content_bg"])
         tarjetas_row.pack(fill="x")
@@ -328,7 +337,9 @@ class MainWindow(tk.Tk):
                  fg="#475569", font=("Segoe UI", 10)).pack(anchor="w", pady=(10, 0))
 
         atajos_card = self._crear_card(fila2)
-        atajos_card.pack(side="left", fill="both", expand=False, padx=(6, 0), width=320)
+        atajos_card.configure(width=320)
+        atajos_card.pack_propagate(False)
+        atajos_card.pack(side="left", fill="both", expand=False, padx=(6, 0))
         atajos_inner = atajos_card._inner
         at_pad = tk.Frame(atajos_inner, bg=self.COLORS["card_bg"])
         at_pad.pack(fill="both", expand=True, padx=18, pady=16)
