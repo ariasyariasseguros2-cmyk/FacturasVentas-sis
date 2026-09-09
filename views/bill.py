@@ -9,8 +9,9 @@ from tkinter import ttk, filedialog, messagebox
 
 from utils.validacion_bd import (
     validar_filas_contra_bd,
-    COLOR_EXISTE,
-    COLOR_NO_EXISTE,
+    COLOR_VERDE,
+    COLOR_AMARILLO,
+    COLOR_ROJO,
 )
 
 
@@ -955,6 +956,10 @@ class TableroFacturacion(tk.Frame):
         tot_row.pack(fill="x", pady=(12, 10))
         self._construir_totales(tot_row)
 
+        ley_row = tk.Frame(inner, bg="#ffffff")
+        ley_row.pack(fill="x", pady=(0, 8))
+        self._construir_leyenda(ley_row)
+
         t_frame = tk.Frame(inner, bg="#ffffff")
         t_frame.pack(fill="both", expand=True, pady=(0, 8))
         self._construir_tabla(t_frame)
@@ -1010,6 +1015,47 @@ class TableroFacturacion(tk.Frame):
             tk.Label(pad, textvariable=sv, bg=bgcard, fg=color,
                      font=("Segoe UI", 16, "bold")).pack(anchor="w", pady=(4, 0))
 
+    def _construir_leyenda(self, parent):
+        wrap = tk.Frame(parent, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        wrap.pack(fill="x", padx=0, pady=0)
+        inner = tk.Frame(wrap, bg="#f8fafc")
+        inner.pack(fill="x", padx=10, pady=6)
+
+        tk.Label(
+            inner,
+            text="Leyenda:",
+            bg="#f8fafc", fg="#334155",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left")
+
+        reglas = [
+            ("verde", COLOR_VERDE,    "#166534", "Recibo + Factura"),
+            ("amarillo", COLOR_AMARILLO, "#92400e", "Solo hay Recibo"),
+            ("rojo", COLOR_ROJO,     "#991b1b", "Sin Recibo ni Factura"),
+        ]
+        self._leyenda_vars: Dict[str, tk.StringVar] = {}
+        for i, (key, bg, fg, texto) in enumerate(reglas):
+            if i > 0:
+                tk.Frame(inner, bg="#cbd5e1", width=1, height=18).pack(side="left", padx=10)
+            item = tk.Frame(inner, bg="#f8fafc")
+            item.pack(side="left", padx=(6 if i == 0 else 0, 0))
+            cuadro = tk.Label(item, text="  ", bg=bg, fg=fg,
+                              font=("Segoe UI", 9, "bold"),
+                              highlightbackground=fg, highlightthickness=1, width=2)
+            cuadro.pack(side="left")
+            tk.Label(item, text=f" {texto} ", bg="#f8fafc", fg=fg,
+                     font=("Segoe UI", 9)).pack(side="left")
+            sv = tk.StringVar(value="(0)")
+            self._leyenda_vars[key] = sv
+            tk.Label(item, textvariable=sv, bg="#f8fafc", fg=fg,
+                     font=("Segoe UI", 9, "bold")).pack(side="left")
+
+    def _actualizar_leyenda_conteos(self, verde: int = 0, amarillo: int = 0, rojo: int = 0):
+        if hasattr(self, "_leyenda_vars"):
+            self._leyenda_vars["verde"].set(f"({verde})")
+            self._leyenda_vars["amarillo"].set(f"({amarillo})")
+            self._leyenda_vars["rojo"].set(f"({rojo})")
+
     def _construir_tabla(self, parent):
         tv_frame = tk.Frame(parent, bg="#ffffff")
         tv_frame.pack(fill="both", expand=True)
@@ -1042,8 +1088,9 @@ class TableroFacturacion(tk.Frame):
                         bordercolor="#e2e8f0", padding=4)
         style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", "#1e3a8a")])
 
-        self.tree.tag_configure("existe", background=COLOR_EXISTE, foreground="#166534")
-        self.tree.tag_configure("no_existe", background=COLOR_NO_EXISTE, foreground="#991b1b")
+        self.tree.tag_configure("verde", background=COLOR_VERDE, foreground="#166534")
+        self.tree.tag_configure("amarillo", background=COLOR_AMARILLO, foreground="#92400e")
+        self.tree.tag_configure("rojo", background=COLOR_ROJO, foreground="#991b1b")
 
         self.tree.grid(row=0, column=0, sticky="nsew")
         scrollbar_y.grid(row=0, column=1, sticky="ns")
@@ -1083,6 +1130,7 @@ class TableroFacturacion(tk.Frame):
         for f in filas:
             self._append_row(f)
 
+        self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
         self.lbl_estado.configure(
             text=f"Importado: {len(filas)} filas desde {os.path.basename(path)}  |  Total registros: {len(self._rows)}",
@@ -1101,6 +1149,7 @@ class TableroFacturacion(tk.Frame):
             "cliente": "",
         }
         self._append_row(fila)
+        self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
 
     def _append_row(self, f: Dict[str, Any]):
@@ -1133,6 +1182,7 @@ class TableroFacturacion(tk.Frame):
         for idx in sorted(idxs, reverse=True):
             if 0 <= idx < len(self._rows):
                 del self._rows[idx]
+        self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
 
     def _limpiar(self):
@@ -1143,6 +1193,7 @@ class TableroFacturacion(tk.Frame):
         for iid in list(self.tree.get_children()):
             self.tree.delete(iid)
         self._rows.clear()
+        self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
         self.lbl_estado.configure(text="Tabla limpiada.", fg="#64748b")
 
@@ -1155,6 +1206,7 @@ class TableroFacturacion(tk.Frame):
                 row["monto_comision"] = _round2(md * pct / Decimal("100"))
                 iid = self.tree.get_children()[i]
                 self.tree.item(iid, values=self._valores_tabla(row))
+        self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
         self.lbl_estado.configure(text=f"Comisiones recalculadas al 23% sobre Monto Doc. ({len(self._rows)} filas).", fg="#0f766e")
 
@@ -1182,38 +1234,71 @@ class TableroFacturacion(tk.Frame):
             return
 
         iids = self.tree.get_children()
+        cant_verde = 0
+        cant_amarillo = 0
+        cant_rojo = 0
+
         for i, res in enumerate(resultados):
             if i >= len(iids):
                 break
-            tag = "existe" if res["existe_general"] else "no_existe"
+            existe_recibo = res.get("existe_recibo", False)
+            existe_factura = res.get("existe_factura", False)
+
+            if existe_recibo and existe_factura:
+                tag = "verde"
+                cant_verde += 1
+            elif existe_recibo and not existe_factura:
+                tag = "amarillo"
+                cant_amarillo += 1
+            else:
+                tag = "rojo"
+                cant_rojo += 1
+
             self.tree.item(iids[i], tags=(tag,))
+
+        self._actualizar_leyenda_conteos(cant_verde, cant_amarillo, cant_rojo)
 
         total = len(self._rows)
         detalles_unicos = []
-        if cant_existe > 0:
-            detalles_unicos.append(f"Existe: {cant_existe}")
-        if cant_no_existe > 0:
-            detalles_unicos.append(f"No existe: {cant_no_existe}")
+        if cant_verde > 0:
+            detalles_unicos.append(f"Verde (R+F): {cant_verde}")
+        if cant_amarillo > 0:
+            detalles_unicos.append(f"Amarillo (R): {cant_amarillo}")
+        if cant_rojo > 0:
+            detalles_unicos.append(f"Rojo (---): {cant_rojo}")
         resumen = "  |  ".join(detalles_unicos)
+
+        if cant_rojo == 0 and cant_amarillo == 0:
+            fg_estado = "#0f766e"
+        elif cant_rojo > 0:
+            fg_estado = "#dc2626"
+        else:
+            fg_estado = "#b45309"
+
         self.lbl_estado.configure(
             text=f"Validación completada — {total} filas  |  {resumen}",
-            fg="#0f766e" if cant_no_existe == 0 else "#b45309",
+            fg=fg_estado,
         )
 
-        if cant_no_existe == 0:
+        if cant_rojo == 0 and cant_amarillo == 0:
             messagebox.showinfo(
                 "Validación exitosa",
-                f"Todas las {total} filas fueron encontradas en la base de datos.\n"
-                "Todas las filas tienen coincidencia.",
+                f"Todas las {total} filas tienen RECIBO y FACTURA en la BD.\n"
+                "Todas las filas están en VERDE.",
                 parent=self,
             )
         else:
+            detalles_msg = []
+            if cant_verde > 0:
+                detalles_msg.append(f"🟢 VERDE (Recibo + Factura): {cant_verde}")
+            if cant_amarillo > 0:
+                detalles_msg.append(f"🟡 AMARILLO (Solo Recibo): {cant_amarillo}")
+            if cant_rojo > 0:
+                detalles_msg.append(f"🔴 ROJO (Sin Recibo ni Factura): {cant_rojo}")
             messagebox.showwarning(
                 "Validación con inconsistencias",
-                f"Se encontraron {cant_no_existe} fila(s) SIN coincidencia en la BD.\n\n"
-                f"Existe: {cant_existe}\n"
-                f"No existe: {cant_no_existe}\n\n"
-                "Las filas en ROJO requieren revisión.",
+                "Resultado de la validación:\n\n"
+                + "\n".join(detalles_msg),
                 parent=self,
             )
 
@@ -1284,6 +1369,7 @@ class TableroFacturacion(tk.Frame):
         else:
             row[col_id] = valor_nuevo
         self.tree.item(iid, values=self._valores_tabla(row))
+        self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
 
     # --- Helpers

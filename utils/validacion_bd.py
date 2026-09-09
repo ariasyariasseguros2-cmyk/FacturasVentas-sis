@@ -6,8 +6,12 @@ from utils.conexion_bd import ConexionBD
 
 SIS_KEY = "MiPassphraseSegura$$2025"
 
-COLOR_EXISTE = "#dcfce7"
-COLOR_NO_EXISTE = "#fee2e2"
+COLOR_VERDE = "#dcfce7"
+COLOR_AMARILLO = "#fef3c7"
+COLOR_ROJO = "#fee2e2"
+
+COLOR_EXISTE = COLOR_VERDE
+COLOR_NO_EXISTE = COLOR_ROJO
 
 
 def _normalizar(texto: str) -> str:
