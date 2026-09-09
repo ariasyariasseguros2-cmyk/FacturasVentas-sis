@@ -5,6 +5,7 @@ from typing import Callable, Dict, Any, Optional
 
 from controllers.auth_controller import AuthController
 from views.bill import TableroFacturacion
+from views.bill_rimac import TableroFacturacionRimac
 
 
 class MainWindow(tk.Tk):
@@ -32,12 +33,13 @@ class MainWindow(tk.Tk):
 
     MENU_ITEMS = [
         ("📊", "Dashboard", 0),
-        ("🧾", "Facturas", 1),
-        ("📑", "Pólizas", 2),
-        ("👥", "Clientes", 3),
-        ("📦", "Productos", 4),
-        ("👤", "Usuarios", 5),
-        ("⚙️", "Configuración", 6),
+        ("🧾", "Facturas Sanitas/Crecer/Proctecta", 1),
+        ("🔴", "Facturas Rimac", 2),
+        ("📑", "Pólizas", 3),
+        ("👥", "Clientes", 4),
+        ("📦", "Productos", 5),
+        ("👤", "Usuarios", 6),
+        ("⚙️", "Configuración", 7),
     ]
 
     def __init__(
@@ -250,6 +252,7 @@ class MainWindow(tk.Tk):
         self._paginas = [
             self._crear_dashboard(self.stack),
             TableroFacturacion(self.stack, bg=self.COLORS["content_bg"]),
+            TableroFacturacionRimac(self.stack, bg=self.COLORS["content_bg"]),
         ]
         for nombre in ("Pólizas", "Clientes", "Productos", "Usuarios", "Configuración"):
             self._paginas.append(self._crear_pagina_generica(self.stack, nombre))
