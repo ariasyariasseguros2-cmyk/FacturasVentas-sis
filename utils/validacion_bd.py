@@ -1,5 +1,5 @@
 import re
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Set
 
 from utils.conexion_bd import ConexionBD
 
@@ -23,6 +23,15 @@ _DECRYPT_TPL = (
     "CAST(AES_DECRYPT(FROM_BASE64({col}), %s) AS CHAR)"
 )
 
+_ALIAS_A_TABLA = {"p": "polizas", "c": "cuotas"}
+
+
+def _alias_tabla(tabla_col: str) -> Tuple[str, str, str]:
+    """Descompone 'p.recibo' → (alias='p', tabla='polizas', col='recibo')."""
+    alias, col = tabla_col.split(".", 1)
+    tabla = _ALIAS_A_TABLA.get(alias, alias)
+    return alias, tabla, col
+
 
 def _condicion_cifrada_norm(col: str, valor_norm: str) -> Tuple[str, Tuple[str, str]]:
     expr = _DECRYPT_TPL.format(col=col)
@@ -35,19 +44,95 @@ def _condicion_plana_norm(col: str, valor_norm: str) -> Tuple[str, Tuple[str]]:
     return sql, (valor_norm,)
 
 
+def _buscar_masivo_cifrado(
+    bd: ConexionBD,
+    pre: List[Tuple[str, Tuple[Any, ...]]],
+    tabla_col: str,
+    valores: List[str],
+) -> Set[str]:
+    """
+    Busca MASIVAMENTE una lista de valores en una columna CIFRADA usando IN (...).
+    Usa un SUBQUERY wrapper para que MySQL materialice el descifrado correctamente.
+    Devuelve el set de valores NORMALIZADOS que SÍ existen en la columna.
+    """
+    if not valores:
+        return set()
+
+    alias, tabla, col = _alias_tabla(tabla_col)
+    expr_col = _DECRYPT_TPL.format(col=f"{alias}.{col}")
+    norm_expr = f"UPPER(REPLACE(REPLACE({expr_col}, ' ', ''), 'Ñ', 'N'))"
+
+    placeholders = ", ".join(["%s"] * len(valores))
+    sql = (
+        f"SELECT DISTINCT sub.val FROM ("
+        f"  SELECT {norm_expr} AS val FROM {tabla} {alias}"
+        f") sub "
+        f"WHERE sub.val IN ({placeholders})"
+    )
+    params = (SIS_KEY,) + tuple(valores)
+
+    try:
+        rows = bd.ejecutar_consulta(sql, params, solo_uno=False, pre_statements=pre)
+    except Exception:
+        return set()
+
+    encontrados: Set[str] = set()
+    for row in (rows or []):
+        v = row.get("val")
+        if v is not None:
+            encontrados.add(str(v))
+    return encontrados
+
+
+def _buscar_masivo_plano(
+    bd: ConexionBD,
+    pre: List[Tuple[str, Tuple[Any, ...]]],
+    tabla_col: str,
+    valores: List[str],
+) -> Set[str]:
+    """
+    Busca MASIVAMENTE una lista de valores en una columna PLANA (sin cifrar) usando IN (...).
+    Usa SUBQUERY wrapper para coherencia con el método cifrado y robustez.
+    Devuelve el set de valores NORMALIZADOS que SÍ existen.
+    """
+    if not valores:
+        return set()
+
+    alias, tabla, col = _alias_tabla(tabla_col)
+    norm_expr = f"UPPER(REPLACE(REPLACE({alias}.{col}, ' ', ''), 'Ñ', 'N'))"
+    placeholders = ", ".join(["%s"] * len(valores))
+    sql = (
+        f"SELECT DISTINCT sub.val FROM ("
+        f"  SELECT {norm_expr} AS val FROM {tabla} {alias}"
+        f") sub "
+        f"WHERE sub.val IN ({placeholders})"
+    )
+    params = tuple(valores)
+
+    try:
+        rows = bd.ejecutar_consulta(sql, params, solo_uno=False, pre_statements=pre)
+    except Exception:
+        return set()
+
+    encontrados: Set[str] = set()
+    for row in (rows or []):
+        v = row.get("val")
+        if v is not None:
+            encontrados.add(str(v))
+    return encontrados
+
+
 def validar_filas_contra_bd(
     filas: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], int, int]:
     """
-    Valida cada fila contra la BD.
+    VALIDACIÓN RÁPIDA — Consultas MASIVAS (IN ...) en lugar de 1 consulta por fila.
     Busca:
-      - nro_documento en polizas.recibo (cifrado) y polizas.poliza, polizas.nro, cuotas.cupon
-      - doc_legal    en polizas.numero_factura (cifrado) y cuotas.factura
+      - nro_documento en polizas.recibo (cifrado), polizas.poliza, polizas.nro, cuotas.cupon
+      - doc_legal    en polizas.numero_factura (cifrado y plano) y cuotas.factura
 
     Retorna:
       (resultados, cantidad_existe, cantidad_no_existe)
-      Cada resultado es: {"existe_recibo": bool, "existe_factura": bool,
-                         "existe_general": bool, "detalle": str}
     """
     bd = ConexionBD()
     if not bd.conectar():
@@ -62,27 +147,67 @@ def validar_filas_contra_bd(
         return resultados, 0, len(filas)
 
     pre = [("SET @SIS_KEY = %s", (SIS_KEY,))]
-    resultados: List[Dict[str, Any]] = []
-    cant_existe = 0
-    cant_no_existe = 0
+
+    # ================================================================
+    # PASO 1: Normalizar y recolectar valores únicos de TODAS las filas
+    # ================================================================
+    filas_normalizadas: List[Dict[str, str]] = []
+    set_nro_docs: Set[str] = set()
+    set_doc_legales: Set[str] = set()
 
     for fila in filas:
         nro_doc = _normalizar(fila.get("nro_documento", ""))
         doc_legal = _normalizar(fila.get("doc_legal", ""))
+        filas_normalizadas.append({"nro_doc": nro_doc, "doc_legal": doc_legal})
+        if nro_doc:
+            set_nro_docs.add(nro_doc)
+        if doc_legal:
+            set_doc_legales.add(doc_legal)
+
+    lista_nro_docs = list(set_nro_docs)
+    lista_doc_legales = list(set_doc_legales)
+
+    # ================================================================
+    # PASO 2: Consultas MASIVAS (solo 7 consultas TOTALES, sin importar N de filas)
+    # ================================================================
+
+    # --- Búsqueda masiva de NRO DOCUMENTO (4 columnas) ---
+    hits_recibo   = _buscar_masivo_cifrado(bd, pre, "p.recibo",   lista_nro_docs)
+    hits_poliza   = _buscar_masivo_cifrado(bd, pre, "p.poliza",   lista_nro_docs)
+    hits_nro      = _buscar_masivo_cifrado(bd, pre, "p.nro",      lista_nro_docs)
+    hits_cupon    = _buscar_masivo_cifrado(bd, pre, "c.cupon",    lista_nro_docs)
+    todos_hits_nro_doc = hits_recibo | hits_poliza | hits_nro | hits_cupon
+
+    # --- Búsqueda masiva de DOC LEGAL (3 columnas) ---
+    hits_numfact_cif  = _buscar_masivo_cifrado(bd, pre, "p.numero_factura", lista_doc_legales)
+    hits_numfact_plan = _buscar_masivo_plano(bd, pre,   "p.numero_factura", lista_doc_legales)
+    hits_cfactura     = _buscar_masivo_plano(bd, pre,   "c.factura",        lista_doc_legales)
+    todos_hits_doc_legal = hits_numfact_cif | hits_numfact_plan | hits_cfactura
+
+    # ================================================================
+    # PASO 3: Construir resultados (búsqueda en SET local — O(1))
+    # ================================================================
+    resultados: List[Dict[str, Any]] = []
+    cant_existe = 0
+    cant_no_existe = 0
+
+    for fn in filas_normalizadas:
+        nro_doc = fn["nro_doc"]
+        doc_legal = fn["doc_legal"]
 
         existe_recibo = False
         existe_factura = False
         detalle_partes: List[str] = []
 
         if nro_doc:
-            existe_recibo = _buscar_nro_documento(bd, pre, nro_doc)
+            existe_recibo = nro_doc in todos_hits_nro_doc
             if existe_recibo:
                 detalle_partes.append("Recibo OK")
             else:
                 detalle_partes.append("Recibo NO encontrado")
 
         if doc_legal:
-            existe_factura = _buscar_doc_legal(bd, pre, doc_legal)
+            existe_factura = doc_legal in todos_hits_doc_legal
             if existe_factura:
                 detalle_partes.append("Factura OK")
             else:
@@ -117,6 +242,9 @@ def validar_filas_contra_bd(
     return resultados, cant_existe, cant_no_existe
 
 
+# ---------------------------------------------------------------------
+# FUNCIONES MANTENIDAS PARA COMPATIBILIDAD (no usadas en el flujo rápido)
+# ---------------------------------------------------------------------
 def _buscar_nro_documento(bd: ConexionBD, pre, valor: str) -> bool:
     checks = []
 
