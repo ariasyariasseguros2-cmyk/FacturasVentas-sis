@@ -41,12 +41,16 @@ class ConexionBD:
         query: str,
         params: Optional[Tuple[Any, ...]] = None,
         solo_uno: bool = False,
+        pre_statements: Optional[List[Tuple[str, Optional[Tuple[Any, ...]]]]] = None,
     ) -> Optional[Any]:
         if not self._asegurar_conexion():
             return None
 
         try:
             cursor = self.conexion.cursor(dictionary=True, buffered=True)
+            if pre_statements:
+                for ps_query, ps_params in pre_statements:
+                    cursor.execute(ps_query, ps_params or ())
             cursor.execute(query, params or ())
             if solo_uno:
                 resultado = cursor.fetchone()

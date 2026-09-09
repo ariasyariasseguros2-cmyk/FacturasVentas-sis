@@ -7,6 +7,12 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+from utils.validacion_bd import (
+    validar_filas_contra_bd,
+    COLOR_EXISTE,
+    COLOR_NO_EXISTE,
+)
+
 
 TWO_PLACES = Decimal("0.01")
 IGV_PORCENTAJE = Decimal("0.18")
@@ -960,18 +966,19 @@ class TableroFacturacion(tk.Frame):
     def _crear_encabezado(self, parent):
         title_box = tk.Frame(parent, bg="#ffffff")
         title_box.pack(side="left")
-        tk.Label(title_box, text="🧾  Gestión de Comisiones — Facturas",
+        tk.Label(title_box, text="Gestión de Comisiones — Facturas",
                  bg="#ffffff", fg="#0f172a", font=("Segoe UI", 15, "bold")).pack(anchor="w")
         tk.Label(title_box, text="Extraiga datos desde el PDF de Sanitas. Los valores se pueden editar.",
                  bg="#ffffff", fg="#64748b", font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
 
         btns = tk.Frame(parent, bg="#ffffff")
         btns.pack(side="right")
-        self._mkbtn(btns, "📂  Cargar PDF", "#2563eb", self._cargar_pdf).pack(side="left", padx=3)
-        self._mkbtn(btns, "➕  Nueva fila", "#0ea5e9", self._agregar_fila).pack(side="left", padx=3)
-        self._mkbtn(btns, "🗑️  Eliminar fila", "#ef4444", self._eliminar_fila).pack(side="left", padx=3)
-        self._mkbtn(btns, "🔄  Recalcular comisiones (23%)", "#0f766e", self._recalcular_comisiones_23).pack(side="left", padx=3)
-        self._mkbtn(btns, "🧹  Limpiar todo", "#475569", self._limpiar).pack(side="left", padx=3)
+        self._mkbtn(btns, "Cargar PDF", "#2563eb", self._cargar_pdf).pack(side="left", padx=3)
+        self._mkbtn(btns, "Validar BD", "#16a34a", self._validar_contra_bd).pack(side="left", padx=3)
+        self._mkbtn(btns, "Nueva fila", "#0ea5e9", self._agregar_fila).pack(side="left", padx=3)
+        self._mkbtn(btns, "Eliminar fila", "#ef4444", self._eliminar_fila).pack(side="left", padx=3)
+        self._mkbtn(btns, "Recalcular comisiones (23%)", "#0f766e", self._recalcular_comisiones_23).pack(side="left", padx=3)
+        self._mkbtn(btns, "Limpiar todo", "#475569", self._limpiar).pack(side="left", padx=3)
 
     def _mkbtn(self, parent, text, color, cmd):
         return tk.Button(parent, text=text, bg=color, fg="#ffffff",
@@ -1035,6 +1042,9 @@ class TableroFacturacion(tk.Frame):
                         bordercolor="#e2e8f0", padding=4)
         style.map("Treeview", background=[("selected", "#dbeafe")], foreground=[("selected", "#1e3a8a")])
 
+        self.tree.tag_configure("existe", background=COLOR_EXISTE, foreground="#166534")
+        self.tree.tag_configure("no_existe", background=COLOR_NO_EXISTE, foreground="#991b1b")
+
         self.tree.grid(row=0, column=0, sticky="nsew")
         scrollbar_y.grid(row=0, column=1, sticky="ns")
         scrollbar_x.grid(row=1, column=0, sticky="ew")
@@ -1065,7 +1075,7 @@ class TableroFacturacion(tk.Frame):
         if not filas:
             messagebox.showwarning("Sin datos",
                                    "El PDF se leyó pero no se detectaron filas de detalle.\n"
-                                   "Puede agregar filas manualmente con ➕  Nueva fila.",
+                                   "Puede agregar filas manualmente con Nueva fila.",
                                    parent=self)
             self._actualizar_totales()
             return
@@ -1146,7 +1156,66 @@ class TableroFacturacion(tk.Frame):
                 iid = self.tree.get_children()[i]
                 self.tree.item(iid, values=self._valores_tabla(row))
         self._actualizar_totales()
-        self.lbl_estado.configure(text=f"✅ Comisiones recalculadas al 23% sobre Monto Doc. ({len(self._rows)} filas).", fg="#0f766e")
+        self.lbl_estado.configure(text=f"Comisiones recalculadas al 23% sobre Monto Doc. ({len(self._rows)} filas).", fg="#0f766e")
+
+    def _validar_contra_bd(self):
+        if not self._rows:
+            messagebox.showinfo(
+                "Validar BD",
+                "No hay filas en la tabla para validar.\nCargue un PDF primero o agregue filas manualmente.",
+                parent=self,
+            )
+            return
+
+        self.lbl_estado.configure(text="Validando contra base de datos...", fg="#0284c7")
+        self.update_idletasks()
+
+        try:
+            resultados, cant_existe, cant_no_existe = validar_filas_contra_bd(self._rows)
+        except Exception as e:
+            messagebox.showerror(
+                "Error de validación",
+                f"Ocurrió un error al validar contra la BD:\n\n{str(e)}\n\n{traceback.format_exc(limit=2)}",
+                parent=self,
+            )
+            self.lbl_estado.configure(text="Error al validar.", fg="#dc2626")
+            return
+
+        iids = self.tree.get_children()
+        for i, res in enumerate(resultados):
+            if i >= len(iids):
+                break
+            tag = "existe" if res["existe_general"] else "no_existe"
+            self.tree.item(iids[i], tags=(tag,))
+
+        total = len(self._rows)
+        detalles_unicos = []
+        if cant_existe > 0:
+            detalles_unicos.append(f"Existe: {cant_existe}")
+        if cant_no_existe > 0:
+            detalles_unicos.append(f"No existe: {cant_no_existe}")
+        resumen = "  |  ".join(detalles_unicos)
+        self.lbl_estado.configure(
+            text=f"Validación completada — {total} filas  |  {resumen}",
+            fg="#0f766e" if cant_no_existe == 0 else "#b45309",
+        )
+
+        if cant_no_existe == 0:
+            messagebox.showinfo(
+                "Validación exitosa",
+                f"Todas las {total} filas fueron encontradas en la base de datos.\n"
+                "Todas las filas tienen coincidencia.",
+                parent=self,
+            )
+        else:
+            messagebox.showwarning(
+                "Validación con inconsistencias",
+                f"Se encontraron {cant_no_existe} fila(s) SIN coincidencia en la BD.\n\n"
+                f"Existe: {cant_existe}\n"
+                f"No existe: {cant_no_existe}\n\n"
+                "Las filas en ROJO requieren revisión.",
+                parent=self,
+            )
 
     # --- Celdas editables
     def _on_double_click(self, event):
