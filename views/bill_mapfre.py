@@ -7,11 +7,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from utils.validacion_bd import (
+from utils.validacion_mapfre_bd import (
     COLOR_AMARILLO,
     COLOR_ROJO,
     COLOR_VERDE,
-    validar_filas_contra_bd,
+    validar_filas_contra_mapfre_bd,
 )
 
 
@@ -1131,7 +1131,8 @@ class TableroFacturacionMapfre(tk.Frame):
                 {
                     "fecha": r.get("fecha_movimiento", ""),
                     "tipo_doc": r.get("nombre_ramo", "") or "COMI",
-                    "nro_documento": r.get("nro_recibo", "") or r.get("poliza", ""),
+                    "poliza": r.get("poliza", ""),
+                    "nro_recibo": r.get("nro_recibo", ""),
                     "doc_legal": r.get("nro_referido", ""),
                     "monto_doc": _to_decimal_m(r.get("prima_neta")),
                     "monto_comision": _to_decimal_m(r.get("importe_comision")),
@@ -1142,7 +1143,7 @@ class TableroFacturacionMapfre(tk.Frame):
             )
 
         try:
-            resultados, cant_existe, cant_no_existe = validar_filas_contra_bd(filas_para_validar)
+            resultados, cant_existe, cant_no_existe = validar_filas_contra_mapfre_bd(filas_para_validar)
         except Exception as e:
             messagebox.showerror(
                 "Error de validacion",
