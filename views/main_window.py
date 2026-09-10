@@ -67,6 +67,8 @@ class MainWindow(tk.Tk):
         self.on_logout = on_logout
         self._botones_menu = []
         self._paginas = []
+        self._fecha_job = None
+        self._destroying = False
 
         self.title("FacturasVentas — Sistema de Facturación")
         self.geometry("1280x820")
@@ -435,8 +437,13 @@ class MainWindow(tk.Tk):
         return "".join(p[0].upper() for p in partes)
 
     def _actualizar_fecha(self):
-        self.lbl_fecha.configure(text=datetime.now().strftime("%d/%m/%Y  %H:%M"))
-        self.after(30000, self._actualizar_fecha)
+        if self._destroying or not self.winfo_exists():
+            return
+        try:
+            self.lbl_fecha.configure(text=datetime.now().strftime("%d/%m/%Y  %H:%M"))
+        except Exception:
+            return
+        self._fecha_job = self.after(30000, self._actualizar_fecha)
 
     def _hoy_texto(self) -> str:
         meses = ["enero", "febrero", "marzo", "abril", "mayo", "junio",
@@ -811,6 +818,14 @@ class MainWindow(tk.Tk):
             except Exception:
                 pass
 
+    def _cancelar_jobs_pendientes(self):
+        if self._fecha_job is not None:
+            try:
+                self.after_cancel(self._fecha_job)
+            except Exception:
+                pass
+            self._fecha_job = None
+
     def _confirmar_logout(self):
         resp = messagebox.askyesno(
             "Cerrar sesión",
@@ -818,6 +833,8 @@ class MainWindow(tk.Tk):
             parent=self,
         )
         if resp:
+            self._cancelar_jobs_pendientes()
+            self._destroying = True
             self.auth.cerrar_sesion()
             callback = self.on_logout
             try:
@@ -831,8 +848,31 @@ class MainWindow(tk.Tk):
                     pass
 
     def _al_cerrar(self):
-        self.auth.cerrar_sesion()
+        if self._destroying:
+            return
+        resp = messagebox.askyesno(
+            "Salir del sistema",
+            f"¿Está seguro que desea cerrar FacturasVentas?\n\nSe cerrará la sesión de {self.usuario.get('nombre', 'este usuario')}.",
+            parent=self,
+        )
+        if not resp:
+            return
+        self._destroying = True
+        self._cancelar_jobs_pendientes()
+        try:
+            self.auth.cerrar_sesion()
+        except Exception:
+            pass
         try:
             self.destroy()
         except Exception:
             pass
+        try:
+            sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            try:
+                os._exit(0)
+            except Exception:
+                pass
