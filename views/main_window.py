@@ -11,6 +11,7 @@ from controllers.dashboard_controller import DashboardController
 from views.bill import TableroFacturacion
 from views.bill_rimac import TableroFacturacionRimac
 from views.bill_grandias import TableroFacturacionGrandias
+from views.bill_positiva import TableroFacturacionPositiva
 from utils.updater import (
     APP_VERSION,
     consultar_version_remota,
@@ -51,11 +52,12 @@ class MainWindow(tk.Tk):
         ("🧾", "Facturas Sa/Cre/Proc", 1),
         ("🔴", "Facturas Rimac", 2),
         ("🟡", "Facturas Grandia", 3),
-        ("📑", "Pólizas", 4),
-        ("👥", "Clientes", 5),
-        ("📦", "Productos", 6),
-        ("👤", "Usuarios", 7),
-        ("⚙️", "Configuración", 8),
+        ("🟣", "Facturas Positiva", 4),
+        ("📑", "Pólizas", 5),
+        ("👥", "Clientes", 6),
+        ("📦", "Productos", 7),
+        ("👤", "Usuarios", 8),
+        ("⚙️", "Configuración", 9),
     ]
 
     def __init__(
@@ -285,6 +287,7 @@ class MainWindow(tk.Tk):
             TableroFacturacion(self.stack, bg=self.COLORS["content_bg"]),
             TableroFacturacionRimac(self.stack, bg=self.COLORS["content_bg"]),
             TableroFacturacionGrandias(self.stack, bg=self.COLORS["content_bg"]),
+            TableroFacturacionPositiva(self.stack, bg=self.COLORS["content_bg"]),
         ]
         for nombre in ("Pólizas", "Clientes", "Productos", "Usuarios", "Configuración"):
             self._paginas.append(self._crear_pagina_generica(self.stack, nombre))
