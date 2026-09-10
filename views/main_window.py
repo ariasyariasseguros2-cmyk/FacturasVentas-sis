@@ -9,6 +9,7 @@ import sys
 from controllers.auth_controller import AuthController
 from views.bill import TableroFacturacion
 from views.bill_rimac import TableroFacturacionRimac
+from views.bill_grandias import TableroFacturacionGrandias
 from utils.updater import (
     APP_VERSION,
     consultar_version_remota,
@@ -48,11 +49,12 @@ class MainWindow(tk.Tk):
         ("📊", "Dashboard", 0),
         ("🧾", "Facturas Sa/Cre/Proc", 1),
         ("🔴", "Facturas Rimac", 2),
-        ("📑", "Pólizas", 3),
-        ("👥", "Clientes", 4),
-        ("📦", "Productos", 5),
-        ("👤", "Usuarios", 6),
-        ("⚙️", "Configuración", 7),
+        ("🟡", "Facturas Grandia", 3),
+        ("📑", "Pólizas", 4),
+        ("👥", "Clientes", 5),
+        ("📦", "Productos", 6),
+        ("👤", "Usuarios", 7),
+        ("⚙️", "Configuración", 8),
     ]
 
     def __init__(
@@ -280,6 +282,7 @@ class MainWindow(tk.Tk):
             self._crear_dashboard(self.stack),
             TableroFacturacion(self.stack, bg=self.COLORS["content_bg"]),
             TableroFacturacionRimac(self.stack, bg=self.COLORS["content_bg"]),
+            TableroFacturacionGrandias(self.stack, bg=self.COLORS["content_bg"]),
         ]
         for nombre in ("Pólizas", "Clientes", "Productos", "Usuarios", "Configuración"):
             self._paginas.append(self._crear_pagina_generica(self.stack, nombre))
