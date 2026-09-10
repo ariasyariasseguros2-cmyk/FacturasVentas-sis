@@ -2,10 +2,22 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 from typing import Callable, Dict, Any, Optional
+import threading
+import os
+import sys
 
 from controllers.auth_controller import AuthController
 from views.bill import TableroFacturacion
 from views.bill_rimac import TableroFacturacionRimac
+from utils.updater import (
+    APP_VERSION,
+    consultar_version_remota,
+    abrir_descarga,
+    descargar_archivo,
+    aplicar_parche_y_cerrar,
+    ejecutar_actualizador_y_salir,
+    obtener_directorio_ejecutable,
+)
 
 
 class MainWindow(tk.Tk):
@@ -29,11 +41,12 @@ class MainWindow(tk.Tk):
         "success": "#16a34a",
         "warning": "#ea580c",
         "emergency": "#fbbf24",
+        
     }
 
     MENU_ITEMS = [
         ("📊", "Dashboard", 0),
-        ("🧾", "Facturas Sanitas/Crecer/Proctecta", 1),
+        ("🧾", "Facturas Sa/Cre/Proc", 1),
         ("🔴", "Facturas Rimac", 2),
         ("📑", "Pólizas", 3),
         ("👥", "Clientes", 4),
@@ -136,6 +149,18 @@ class MainWindow(tk.Tk):
         tk.Label(info_box, text=self.usuario.get("rol_nombre", "Usuario"),
                  bg=self.COLORS["header_bg"], fg="#94a3b8",
                  font=("Segoe UI", 8)).pack(anchor="w")
+
+        btn_update = tk.Button(header, text="🔄 Actualizaciones", bg="#1e3a8a", fg="#ffffff",
+                               font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+                               cursor="hand2", activebackground="#1e40af",
+                               activeforeground="#ffffff", padx=12, pady=6,
+                               command=self._buscar_actualizaciones)
+        btn_update.pack(side="right", padx=(0, 6), pady=12)
+
+        version_tag = tk.Label(header, text=f"v{APP_VERSION}", bg="#1e293b",
+                               fg="#94a3b8", font=("Segoe UI", 8, "bold"),
+                               padx=8, pady=3)
+        version_tag.pack(side="right", padx=(0, 0), pady=15)
 
         btn_logout = tk.Button(header, text="Cerrar Sesión", bg="#1e293b", fg="#f8fafc",
                                font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
@@ -418,6 +443,373 @@ class MainWindow(tk.Tk):
                  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
         d = datetime.now()
         return f"{d.day} de {meses[d.month - 1]} de {d.year}"
+
+    def _buscar_actualizaciones(self):
+        dlg = self._mostrar_dialogo_espera()
+        self.update_idletasks()
+
+        def _trabajo():
+            res = consultar_version_remota()
+            self.after(0, lambda: self._finalizar_busqueda(dlg, res))
+
+        threading.Thread(target=_trabajo, daemon=True).start()
+
+    def _mostrar_dialogo_espera(self) -> tk.Toplevel:
+        dlg = tk.Toplevel(self)
+        dlg.title("Actualizaciones")
+        dlg.configure(bg="#ffffff")
+        dlg.geometry("380x160")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - 380) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - 160) // 2
+        dlg.geometry(f"+{max(x, 50)}+{max(y, 50)}")
+
+        tk.Label(dlg, text="🔍", bg="#ffffff", fg="#2563eb",
+                 font=("Segoe UI", 24)).pack(pady=(22, 6))
+        tk.Label(dlg, text="Buscando actualizaciones...", bg="#ffffff",
+                 fg="#0f172a", font=("Segoe UI", 11, "bold")).pack()
+        tk.Label(dlg, text="Conectando al servidor de versiones", bg="#ffffff",
+                 fg="#64748b", font=("Segoe UI", 9)).pack(pady=(2, 0))
+        return dlg
+
+    def _finalizar_busqueda(self, dlg: tk.Toplevel, resultado: Dict[str, Any]):
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+        self.after(10, lambda: self._mostrar_resultado_actualizacion(resultado))
+
+    def _mostrar_resultado_actualizacion(self, res: Dict[str, Any]):
+        dlg = tk.Toplevel(self)
+        dlg.title("Actualizaciones")
+        dlg.configure(bg="#ffffff")
+        dlg.geometry("500x420")
+        dlg.minsize(500, 420)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - 500) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - 420) // 2
+        dlg.geometry(f"+{max(x, 50)}+{max(y, 50)}")
+
+        if res.get("hay_actualizacion"):
+            titulo_barra = "Nueva versión disponible"
+            color_titulo = "#16a34a"
+            icono = "🎉"
+            color_barra_bg = "#dcfce7"
+            color_barra_bd = "#86efac"
+        elif res.get("ok"):
+            titulo_barra = "Aplicación actualizada"
+            color_titulo = "#2563eb"
+            icono = "✔"
+            color_barra_bg = "#dbeafe"
+            color_barra_bd = "#93c5fd"
+        else:
+            titulo_barra = "⚠ No se pudo comprobar"
+            color_titulo = "#b45309"
+            icono = "⚠"
+            color_barra_bg = "#fef3c7"
+            color_barra_bd = "#fcd34d"
+
+        barra = tk.Frame(dlg, bg=color_barra_bg, height=54,
+                         highlightbackground=color_barra_bd, highlightthickness=1)
+        barra.pack(fill="x", padx=14, pady=(14, 0))
+        barra.pack_propagate(False)
+
+        tk.Label(barra, text=icono, bg=color_barra_bg, fg=color_titulo,
+                 font=("Segoe UI", 18)).pack(side="left", padx=(14, 10))
+        tk.Label(barra, text=titulo_barra, bg=color_barra_bg, fg=color_titulo,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+
+        cuerpo = tk.Frame(dlg, bg="#ffffff")
+        cuerpo.pack(fill="both", expand=True, padx=22, pady=14)
+
+        row1 = tk.Frame(cuerpo, bg="#ffffff")
+        row1.pack(fill="x")
+        tk.Label(row1, text="Versión instalada:", bg="#ffffff",
+                 fg="#64748b", font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w")
+        tk.Label(row1, text=f"v{res.get('version_local', APP_VERSION)}", bg="#ffffff",
+                 fg="#0f172a", font=("Segoe UI", 9, "bold")).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        tk.Label(row1, text="Versión remota:", bg="#ffffff",
+                 fg="#64748b", font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", pady=(6, 0))
+        vr = res.get("version_remota") or "—"
+        lbl_vr = tk.Label(row1, text=f"v{vr}" if vr != "—" else vr, bg="#ffffff",
+                          fg="#0f172a", font=("Segoe UI", 9, "bold"))
+        lbl_vr.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(6, 0))
+
+        if res.get("file_size_bytes", 0) > 0:
+            tam_mb = res["file_size_bytes"] / (1024 * 1024)
+            tk.Label(row1, text="Tamaño parche:", bg="#ffffff",
+                     fg="#64748b", font=("Segoe UI", 9)).grid(row=2, column=0, sticky="w", pady=(6, 0))
+            tk.Label(row1, text=f"{tam_mb:.1f} MB", bg="#ffffff",
+                     fg="#0f172a", font=("Segoe UI", 9, "bold")).grid(row=2, column=1, sticky="w", padx=(10, 0), pady=(6, 0))
+
+        if res.get("hay_actualizacion") and res.get("notas"):
+            tk.Label(cuerpo, text="Novedades de esta versión:", bg="#ffffff",
+                     fg="#334155", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(14, 6))
+            notas_box = tk.Frame(cuerpo, bg="#f8fafc",
+                                 highlightbackground="#e2e8f0", highlightthickness=1)
+            notas_box.pack(fill="x")
+            nb = tk.Frame(notas_box, bg="#f8fafc")
+            nb.pack(fill="x", padx=10, pady=8)
+            for nota in res["notas"]:
+                tk.Label(nb, text=f"•  {nota}", bg="#f8fafc", fg="#334155",
+                         font=("Segoe UI", 9), anchor="w").pack(fill="x", pady=1)
+
+        modo = tk.Frame(cuerpo, bg="#ffffff")
+        modo.pack(fill="x", pady=(14, 0))
+        if res.get("hay_actualizacion"):
+            if res.get("puede_autoaplicar"):
+                etq = tk.Label(modo, text="⚡ Actualización automática disponible", bg="#ffffff",
+                               fg="#16a34a", font=("Segoe UI", 9, "bold"))
+                etq.pack(anchor="w")
+                tk.Label(modo,
+                         text="Se descargará y aplicará el parche, luego se reiniciará la aplicación.",
+                         bg="#ffffff", fg="#64748b", font=("Segoe UI", 8), anchor="w").pack(anchor="w", pady=(1, 0))
+            elif getattr(sys, "frozen", False):
+                etq = tk.Label(modo, text="⚠ Esta versión requiere instalador completo", bg="#ffffff",
+                               fg="#b45309", font=("Segoe UI", 9, "bold"))
+                etq.pack(anchor="w")
+            else:
+                etq = tk.Label(modo, text="ℹ Modo desarrollo: auto-parche solo con .exe compilado", bg="#ffffff",
+                               fg="#2563eb", font=("Segoe UI", 9, "bold"))
+                etq.pack(anchor="w")
+
+        if not res.get("ok"):
+            tk.Label(cuerpo, text=f"Detalle: {res.get('error', '')}", bg="#ffffff",
+                     fg="#b91c1c", font=("Segoe UI", 9)).pack(anchor="w", pady=(14, 0))
+
+        pie = tk.Frame(dlg, bg="#ffffff")
+        pie.pack(fill="x", padx=16, pady=(0, 14))
+
+        def _cerrar():
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+        def _descargar():
+            url = res.get("download_url")
+            if url:
+                abrir_descarga(url)
+
+        def _actualizar_auto():
+            patch_url = res.get("patch_url")
+            if not patch_url:
+                messagebox.showerror("Actualización",
+                                     "No hay URL de parche definida en el servidor.", parent=dlg)
+                return
+            checksum = res.get("checksum_sha256") or None
+            version_remota = res.get("version_remota") or "nueva"
+            resp = messagebox.askyesno(
+                "Confirmar actualización",
+                f"Se actualizará FacturasVentas a la versión v{version_remota}.\n\n"
+                "La aplicación se cerrará y luego se abrirá automáticamente actualizada.\n\n"
+                "¿Desea continuar?",
+                parent=dlg,
+            )
+            if not resp:
+                return
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+            self._iniciar_descarga_y_parcheo(patch_url, checksum, version_remota)
+
+        btn_cerrar = tk.Button(pie, text="Cerrar", bg="#f1f5f9", fg="#0f172a",
+                               font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+                               cursor="hand2", activebackground="#e2e8f0",
+                               activeforeground="#0f172a", padx=16, pady=7,
+                               command=_cerrar)
+        btn_cerrar.pack(side="right")
+
+        if res.get("hay_actualizacion") and res.get("download_url"):
+            btn_desc = tk.Button(pie, text="⬇  Descargar instalador", bg="#475569",
+                                 fg="#ffffff", font=("Segoe UI", 9, "bold"),
+                                 relief="flat", bd=0, cursor="hand2",
+                                 activebackground="#334155", activeforeground="#ffffff",
+                                 padx=14, pady=7, command=_descargar)
+            btn_desc.pack(side="right", padx=(0, 8))
+
+        if res.get("hay_actualizacion") and res.get("puede_autoaplicar") and res.get("patch_url"):
+            btn_auto = tk.Button(pie, text="⚡  Actualizar ahora", bg="#16a34a",
+                                 fg="#ffffff", font=("Segoe UI", 9, "bold"),
+                                 relief="flat", bd=0, cursor="hand2",
+                                 activebackground="#15803d", activeforeground="#ffffff",
+                                 padx=14, pady=7, command=_actualizar_auto)
+            btn_auto.pack(side="right", padx=(0, 8))
+
+    def _mostrar_dialogo_progreso(self, titulo: str = "Descargando actualización") -> Dict[str, Any]:
+        dlg = tk.Toplevel(self)
+        dlg.title("Actualizaciones")
+        dlg.configure(bg="#ffffff")
+        dlg.geometry("460x220")
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.update_idletasks()
+        x = self.winfo_rootx() + (self.winfo_width() - 460) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - 220) // 2
+        dlg.geometry(f"+{max(x, 50)}+{max(y, 50)}")
+
+        tk.Label(dlg, text="📦", bg="#ffffff", fg="#2563eb",
+                 font=("Segoe UI", 26)).pack(pady=(18, 4))
+        tk.Label(dlg, text=titulo, bg="#ffffff", fg="#0f172a",
+                 font=("Segoe UI", 11, "bold")).pack()
+        lbl_estado = tk.Label(dlg, text="Preparando...", bg="#ffffff",
+                              fg="#64748b", font=("Segoe UI", 9))
+        lbl_estado.pack(pady=(2, 0))
+
+        pb_frame = tk.Frame(dlg, bg="#ffffff")
+        pb_frame.pack(fill="x", padx=28, pady=(12, 0))
+        estilo = ttk.Style(dlg)
+        try:
+            estilo.theme_use("clam")
+        except Exception:
+            pass
+        estilo.configure("FV.Horizontal.TProgressbar",
+                         troughcolor="#e2e8f0", background="#2563eb",
+                         bordercolor="#ffffff", lightcolor="#2563eb", darkcolor="#1d4ed8")
+        pb = ttk.Progressbar(pb_frame, style="FV.Horizontal.TProgressbar",
+                             orient="horizontal", length=400, mode="determinate")
+        pb.pack(fill="x")
+        pb["maximum"] = 100
+        pb["value"] = 0
+
+        lbl_porcentaje = tk.Label(dlg, text="0%", bg="#ffffff",
+                                  fg="#2563eb", font=("Segoe UI", 9, "bold"))
+        lbl_porcentaje.pack(pady=(4, 0))
+
+        return {
+            "dlg": dlg,
+            "pb": pb,
+            "lbl_estado": lbl_estado,
+            "lbl_porcentaje": lbl_porcentaje,
+        }
+
+    def _iniciar_descarga_y_parcheo(self, patch_url: str, checksum: Optional[str], version_remota: str):
+        ui = self._mostrar_dialogo_progreso(titulo=f"Descargando actualización v{version_remota}")
+        self.update_idletasks()
+
+        dlg = ui["dlg"]
+        pb = ui["pb"]
+        lbl_estado = ui["lbl_estado"]
+        lbl_porcentaje = ui["lbl_porcentaje"]
+
+        dir_app = obtener_directorio_ejecutable()
+        nombre_zip = f"FacturasVentas-{version_remota.replace('.', '_')}.patch"
+        ruta_zip = os.path.join(dir_app, "_updates", nombre_zip)
+        os.makedirs(os.path.dirname(ruta_zip), exist_ok=True)
+
+        ultimo_porcentaje = [-1]
+
+        def prog_descarga(actual: int, total: int):
+            if total <= 0:
+                return
+            pct = int((actual / total) * 100)
+            if pct == ultimo_porcentaje[0]:
+                return
+            ultimo_porcentaje[0] = pct
+            mb_act = actual / (1024 * 1024)
+            mb_tot = total / (1024 * 1024)
+            self.after(0, lambda: self._ui_set_progreso(
+                pb, lbl_porcentaje, lbl_estado,
+                pct, f"Descargando... {mb_act:.1f} / {mb_tot:.1f} MB"
+            ))
+
+        def prog_extraccion(actual: int, total: int):
+            if total <= 0:
+                return
+            pct = int((actual / total) * 100)
+            self.after(0, lambda: self._ui_set_progreso(
+                pb, lbl_porcentaje, lbl_estado,
+                pct, f"Extrayendo archivos... {actual}/{total}"
+            ))
+
+        def _trabajo():
+            try:
+                desc_res = descargar_archivo(patch_url, ruta_zip, progress_cb=prog_descarga)
+                if not desc_res["ok"]:
+                    self.after(0, lambda: self._ui_error_progreso(dlg, desc_res.get("error", "Error desconocido")))
+                    return
+
+                self.after(0, lambda: self._ui_set_progreso(
+                    pb, lbl_porcentaje, lbl_estado,
+                    0, "Verificando integridad..."
+                ))
+
+                self.after(0, lambda: lbl_estado.configure(text="Aplicando parche..."))
+                patch_result = aplicar_parche_y_cerrar(
+                    ruta_zip,
+                    checksum_esperado=checksum,
+                    extraer_progress_cb=prog_extraccion,
+                )
+                if not patch_result["ok"]:
+                    self.after(0, lambda: self._ui_error_progreso(dlg, patch_result.get("error", "No se pudo aplicar el parche")))
+                    return
+
+                ruta_bat = patch_result.get("bat_path")
+                self.after(0, lambda: lbl_estado.configure(text="Cerrando y aplicando actualización..."))
+                self.after(600, lambda: self._aplicar_y_salir(ruta_bat, dlg))
+
+            except Exception as e:
+                self.after(0, lambda: self._ui_error_progreso(dlg, str(e)))
+
+        threading.Thread(target=_trabajo, daemon=True).start()
+
+    def _ui_set_progreso(self, pb, lbl_porcentaje, lbl_estado, pct: int, estado: str):
+        try:
+            pb["value"] = max(0, min(100, int(pct)))
+            lbl_porcentaje.configure(text=f"{max(0, min(100, int(pct)))}%")
+            lbl_estado.configure(text=estado)
+        except Exception:
+            pass
+
+    def _ui_error_progreso(self, dlg, mensaje: str):
+        try:
+            for w in dlg.winfo_children():
+                w.destroy()
+            tk.Label(dlg, text="⚠", bg="#ffffff", fg="#dc2626",
+                     font=("Segoe UI", 28)).pack(pady=(18, 4))
+            tk.Label(dlg, text="No se pudo completar la actualización", bg="#ffffff",
+                     fg="#0f172a", font=("Segoe UI", 11, "bold")).pack()
+            tk.Label(dlg, text=str(mensaje)[:200], bg="#ffffff",
+                     fg="#64748b", font=("Segoe UI", 9), wraplength=380,
+                     justify="center").pack(padx=18, pady=(6, 14))
+            tk.Button(dlg, text="Cerrar", bg="#f1f5f9", fg="#0f172a",
+                      font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
+                      cursor="hand2", activebackground="#e2e8f0",
+                      activeforeground="#0f172a", padx=20, pady=6,
+                      command=dlg.destroy).pack(pady=(0, 14))
+        except Exception:
+            pass
+
+    def _aplicar_y_salir(self, ruta_bat: str, dlg):
+        try:
+            dlg.destroy()
+        except Exception:
+            pass
+        if not ruta_bat or not os.path.exists(ruta_bat):
+            messagebox.showerror("Actualización",
+                                 "No se encontró el script de actualización.", parent=self)
+            return
+        ok = ejecutar_actualizador_y_salir(ruta_bat)
+        if not ok:
+            messagebox.showerror("Actualización",
+                                 "No se pudo lanzar el actualizador.\nDescargue el instalador manual.",
+                                 parent=self)
+            return
+        try:
+            self.auth.cerrar_sesion()
+            self.destroy()
+        except Exception:
+            try:
+                os._exit(0)
+            except Exception:
+                pass
 
     def _confirmar_logout(self):
         resp = messagebox.askyesno(

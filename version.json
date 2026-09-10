@@ -1,0 +1,17 @@
+{
+  "version": "1.0.1",
+  "strategy": "zip_patch",
+  "force_update": false,
+  "download_url": "https://aasnet.tech/updates/FacturasVentas-Setup.exe",
+  "patch_url": "https://aasnet.tech/updates/FacturasVentas-1.0.1.zip",
+  "checksum_sha256": "",
+  "file_size_bytes": 0,
+  "min_version_to_patch": "1.0.0",
+  "release_notes": [
+    "Mejora en la extracción de PDFs de Sanitas",
+    "Corrección de validación en tiempo real contra BD",
+    "Nuevo módulo de Facturas Rimac",
+    "Sistema de auto-actualización automática (Nginx + parches ZIP)"
+  ],
+  "published_at": "2026-09-09"
+}
