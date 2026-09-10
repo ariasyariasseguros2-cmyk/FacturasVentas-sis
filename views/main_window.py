@@ -12,6 +12,8 @@ from views.bill import TableroFacturacion
 from views.bill_rimac import TableroFacturacionRimac
 from views.bill_grandias import TableroFacturacionGrandias
 from views.bill_positiva import TableroFacturacionPositiva
+from views.bill_mapfre import TableroFacturacionMapfre
+
 from utils.updater import (
     APP_VERSION,
     consultar_version_remota,
@@ -53,11 +55,12 @@ class MainWindow(tk.Tk):
         ("🔴", "Facturas Rimac", 2),
         ("🟡", "Facturas Grandia", 3),
         ("🟣", "Facturas Positiva", 4),
-        ("📑", "Pólizas", 5),
-        ("👥", "Clientes", 6),
-        ("📦", "Productos", 7),
-        ("👤", "Usuarios", 8),
-        ("⚙️", "Configuración", 9),
+        ("🔵", "Facturas Mapfre", 5),
+        ("📑", "Pólizas", 6),
+        ("👥", "Clientes", 7),
+        ("📦", "Productos", 8),
+        ("👤", "Usuarios", 9),
+        ("⚙️", "Configuración", 10),
     ]
 
     def __init__(
@@ -288,6 +291,7 @@ class MainWindow(tk.Tk):
             TableroFacturacionRimac(self.stack, bg=self.COLORS["content_bg"]),
             TableroFacturacionGrandias(self.stack, bg=self.COLORS["content_bg"]),
             TableroFacturacionPositiva(self.stack, bg=self.COLORS["content_bg"]),
+            TableroFacturacionMapfre(self.stack, bg=self.COLORS["content_bg"]),
         ]
         for nombre in ("Pólizas", "Clientes", "Productos", "Usuarios", "Configuración"):
             self._paginas.append(self._crear_pagina_generica(self.stack, nombre))
