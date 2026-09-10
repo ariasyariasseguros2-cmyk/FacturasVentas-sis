@@ -7,6 +7,7 @@ import os
 import sys
 
 from controllers.auth_controller import AuthController
+from controllers.dashboard_controller import DashboardController
 from views.bill import TableroFacturacion
 from views.bill_rimac import TableroFacturacionRimac
 from views.bill_grandias import TableroFacturacionGrandias
@@ -82,6 +83,7 @@ class MainWindow(tk.Tk):
         self._construir_ui()
         self._actualizar_fecha()
         self._cambiar_pagina(0)
+        self.actualizar_metricas_dashboard()
 
     def _maximizar_ventana(self):
         try:
@@ -325,17 +327,48 @@ class MainWindow(tk.Tk):
         tarjetas_row = tk.Frame(page, bg=self.COLORS["content_bg"])
         tarjetas_row.pack(fill="x")
 
-        datos = [
-            ("💵", "Ventas del día", "$ 0.00", "#2563eb"),
-            ("🧾", "Facturas emitidas", "0", "#059669"),
-            ("📑", "Pólizas activas", "0", "#7c3aed"),
-            ("👥", "Clientes registrados", "0", "#ea580c"),
-        ]
+        # Tarjeta 1: Ventas del día (S/ y US$)
+        i = 0
+        card_ventas = self._crear_card(tarjetas_row)
+        card_ventas.pack(side="left", fill="both", expand=True,
+                         padx=(0, 6))
+        inner_v = card_ventas._inner
+        inner_v.configure(height=108)
+        inner_v.pack_propagate(False)
 
-        for i, (ico, titulo, valor, color) in enumerate(datos):
+        color_v = "#2563eb"
+        icon_bg_v = self._hex_with_alpha(color_v, 0x1A)
+        icono_lbl_v = tk.Label(inner_v, text="💵", bg=icon_bg_v, fg=color_v,
+                               font=("Segoe UI", 20), anchor="center")
+        icono_lbl_v.place(x=16, y=26, width=56, height=56)
+
+        txt_col_v = tk.Frame(inner_v, bg=self.COLORS["card_bg"])
+        txt_col_v.place(x=90, y=18, relwidth=1, width=-106)
+        tk.Label(txt_col_v, text="Ventas del día", bg=self.COLORS["card_bg"],
+                 fg=self.COLORS["text_secondary"],
+                 font=("Segoe UI", 10)).pack(anchor="w")
+        self.lbl_ventas_soles = tk.Label(
+            txt_col_v, text="S/ 0.00", bg=self.COLORS["card_bg"], fg=color_v,
+            font=("Segoe UI", 14, "bold"))
+        self.lbl_ventas_soles.pack(anchor="w", pady=(3, 0))
+        self.lbl_ventas_dolares = tk.Label(
+            txt_col_v, text="US$ 0.00", bg=self.COLORS["card_bg"],
+            fg="#64748b", font=("Segoe UI", 9, "bold"))
+        self.lbl_ventas_dolares.pack(anchor="w", pady=(2, 0))
+
+        # Tarjetas 2-4: Facturas, Pólizas, Clientes
+        tarjetas_simples = [
+            (1, "🧾", "Facturas emitidas", "0", "#059669"),
+            (2, "📑", "Pólizas activas", "0", "#7c3aed"),
+            (3, "👥", "Clientes registrados", "0", "#ea580c"),
+        ]
+        self._tarjeta_labels = {}
+        for idx, (i, ico, titulo, valor, color) in enumerate(tarjetas_simples):
             card = self._crear_card(tarjetas_row)
+            pad_left = 6
+            pad_right = 0 if idx == len(tarjetas_simples) - 1 else 6
             card.pack(side="left", fill="both", expand=True,
-                      padx=(0 if i == 0 else 6, 0 if i == len(datos) - 1 else 6))
+                      padx=(pad_left, pad_right))
 
             inner = card._inner
             inner.configure(height=108)
@@ -343,17 +376,24 @@ class MainWindow(tk.Tk):
 
             icon_bg = self._hex_with_alpha(color, 0x1A)
             icono_lbl = tk.Label(inner, text=ico, bg=icon_bg, fg=color,
-                                 font=("Segoe UI", 20))
+                                 font=("Segoe UI", 20), anchor="center")
             icono_lbl.place(x=16, y=26, width=56, height=56)
-            icono_lbl.configure(anchor="center")
 
             txt_col = tk.Frame(inner, bg=self.COLORS["card_bg"])
             txt_col.place(x=90, y=22, relwidth=1, width=-106)
             tk.Label(txt_col, text=titulo, bg=self.COLORS["card_bg"],
                      fg=self.COLORS["text_secondary"],
                      font=("Segoe UI", 10)).pack(anchor="w")
-            tk.Label(txt_col, text=valor, bg=self.COLORS["card_bg"], fg=color,
-                     font=("Segoe UI", 18, "bold")).pack(anchor="w", pady=(4, 0))
+            lbl_valor = tk.Label(txt_col, text=valor, bg=self.COLORS["card_bg"],
+                                 fg=color, font=("Segoe UI", 18, "bold"))
+            lbl_valor.pack(anchor="w", pady=(4, 0))
+
+            if titulo == "Facturas emitidas":
+                self.lbl_facturas = lbl_valor
+            elif titulo == "Pólizas activas":
+                self.lbl_polizas = lbl_valor
+            elif titulo == "Clientes registrados":
+                self.lbl_clientes = lbl_valor
 
         fila2 = tk.Frame(page, bg=self.COLORS["content_bg"])
         fila2.pack(fill="both", expand=True, pady=(12, 0))
@@ -453,6 +493,28 @@ class MainWindow(tk.Tk):
                  "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
         d = datetime.now()
         return f"{d.day} de {meses[d.month - 1]} de {d.year}"
+
+    def actualizar_metricas_dashboard(self):
+        try:
+            metricas = DashboardController.obtener_metricas_hoy()
+            ventas_soles = metricas.get("ventas_soles", 0.0) or 0.0
+            ventas_dolares = metricas.get("ventas_dolares", 0.0) or 0.0
+            facturas = metricas.get("facturas", 0) or 0
+            polizas = metricas.get("polizas", 0) or 0
+            clientes = metricas.get("clientes", 0) or 0
+
+            if hasattr(self, "lbl_ventas_soles"):
+                self.lbl_ventas_soles.configure(text=f"S/ {ventas_soles:,.2f}")
+            if hasattr(self, "lbl_ventas_dolares"):
+                self.lbl_ventas_dolares.configure(text=f"US$ {ventas_dolares:,.2f}")
+            if hasattr(self, "lbl_facturas"):
+                self.lbl_facturas.configure(text=str(facturas))
+            if hasattr(self, "lbl_polizas"):
+                self.lbl_polizas.configure(text=str(polizas))
+            if hasattr(self, "lbl_clientes"):
+                self.lbl_clientes.configure(text=str(clientes))
+        except Exception as e:
+            print(f"[Dashboard] Error al actualizar métricas: {e}")
 
     def _buscar_actualizaciones(self):
         dlg = self._mostrar_dialogo_espera()
