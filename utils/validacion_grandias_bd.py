@@ -1,5 +1,6 @@
 import re
-from typing import List, Dict, Any, Tuple, Set
+import traceback
+from typing import List, Dict, Any, Tuple, Set, Optional
 
 from utils.conexion_bd import ConexionBD
 
@@ -14,8 +15,8 @@ COLOR_EXISTE = COLOR_VERDE
 COLOR_NO_EXISTE = COLOR_ROJO
 
 
-def _normalizar(texto: str) -> str:
-    if not texto:
+def _normalizar(texto: Any) -> str:
+    if texto is None:
         return ""
     s = str(texto).strip().upper()
     s = re.sub(r"\s+", "", s)
@@ -27,82 +28,97 @@ _DECRYPT_TPL = (
     "CAST(AES_DECRYPT(FROM_BASE64({col}), %s) AS CHAR)"
 )
 
-_ALIAS_A_TABLA = {"p": "polizas", "c": "cuotas"}
 
+# ================================================================
+#   HERRAMIENTAS PEQUEÑAS Y ROBUSTAS DE BÚSQUEDA
+#   Cada una = 1 sola consulta simple (sin UNION, sin sub-CTEs)
+#   Así si una columna falla por cifrado/plano, lo demás sigue andando.
+# ================================================================
 
-def _alias_tabla(tabla_col: str) -> Tuple[str, str, str]:
-    alias, col = tabla_col.split(".", 1)
-    tabla = _ALIAS_A_TABLA.get(alias, alias)
-    return alias, tabla, col
-
-
-def _buscar_masivo_cifrado(
+def _buscar_columna(
     bd: ConexionBD,
     pre: List[Tuple[str, Tuple[Any, ...]]],
-    tabla_col: str,
+    tabla_alias: str,
+    tabla_real: str,
+    id_col: str,
+    valor_col: str,
     valores: List[str],
-) -> Set[str]:
+    cifrada: bool,
+    ids_por_valor: Dict[str, Set[int]],
+) -> None:
+    """
+    Busca en 1 SOLA columna (cifrada o plana) y pobla `ids_por_valor`
+    agregando los idPoliza/id encontrados. No usa UNIONs de ningún tipo.
+    """
     if not valores:
-        return set()
+        return
 
-    alias, tabla, col = _alias_tabla(tabla_col)
-    expr_col = _DECRYPT_TPL.format(col=f"{alias}.{col}")
-    norm_expr = f"UPPER(REPLACE(REPLACE({expr_col}, ' ', ''), 'Ñ', 'N'))"
+    ph = ", ".join(["%s"] * len(valores))
 
-    placeholders = ", ".join(["%s"] * len(valores))
+    if cifrada:
+        expr = _DECRYPT_TPL.format(col=f"{tabla_alias}.{valor_col}")
+        params: Tuple[Any, ...] = (SIS_KEY,)
+    else:
+        expr = f"{tabla_alias}.{valor_col}"
+        params = ()
+
+    norm_expr = f"UPPER(REPLACE(REPLACE(COALESCE({expr}, ''), ' ', ''), 'Ñ', 'N'))"
+
     sql = (
-        f"SELECT DISTINCT sub.val FROM ("
-        f"  SELECT {norm_expr} AS val FROM {tabla} {alias}"
-        f") sub "
-        f"WHERE sub.val IN ({placeholders})"
+        f"SELECT DISTINCT {tabla_alias}.{id_col} AS idp, {norm_expr} AS val "
+        f"FROM {tabla_real} {tabla_alias} "
+        f"HAVING val IN ({ph})"
     )
-    params = (SIS_KEY,) + tuple(valores)
+    params = params + tuple(valores)
 
+    rows: Optional[Any] = None
     try:
         rows = bd.ejecutar_consulta(sql, params, solo_uno=False, pre_statements=pre)
     except Exception:
-        return set()
+        try:
+            print(
+                f"[validacion_grandias_bd] ERROR en consulta "
+                f"{tabla_real}.{valor_col} ({'cifrada' if cifrada else 'plano'}):"
+            )
+            traceback.print_exc()
+        except Exception:
+            pass
+        return
 
-    encontrados: Set[str] = set()
-    for row in (rows or []):
+    if not rows:
+        return
+
+    for row in rows:
         v = row.get("val")
-        if v is not None:
-            encontrados.add(str(v))
-    return encontrados
+        idp = row.get("idp")
+        if v is None or idp is None:
+            continue
+        vs = str(v).strip()
+        if not vs:
+            continue
+        try:
+            idp_int = int(idp)
+        except Exception:
+            continue
+        ids_por_valor.setdefault(vs, set()).add(idp_int)
 
 
-def _buscar_masivo_plano(
-    bd: ConexionBD,
-    pre: List[Tuple[str, Tuple[Any, ...]]],
-    tabla_col: str,
-    valores: List[str],
-) -> Set[str]:
-    if not valores:
-        return set()
+def _juntar_ids(
+    *dicts: Dict[str, Set[int]],
+) -> Dict[str, Set[int]]:
+    """Combina múltiples Dict[valor, Set[id]] en uno solo (unión de ids por valor)."""
+    out: Dict[str, Set[int]] = {}
+    for d in dicts:
+        for k, ids_set in d.items():
+            if not ids_set:
+                continue
+            out.setdefault(k, set()).update(ids_set)
+    return out
 
-    alias, tabla, col = _alias_tabla(tabla_col)
-    norm_expr = f"UPPER(REPLACE(REPLACE({alias}.{col}, ' ', ''), 'Ñ', 'N'))"
-    placeholders = ", ".join(["%s"] * len(valores))
-    sql = (
-        f"SELECT DISTINCT sub.val FROM ("
-        f"  SELECT {norm_expr} AS val FROM {tabla} {alias}"
-        f") sub "
-        f"WHERE sub.val IN ({placeholders})"
-    )
-    params = tuple(valores)
 
-    try:
-        rows = bd.ejecutar_consulta(sql, params, solo_uno=False, pre_statements=pre)
-    except Exception:
-        return set()
-
-    encontrados: Set[str] = set()
-    for row in (rows or []):
-        v = row.get("val")
-        if v is not None:
-            encontrados.add(str(v))
-    return encontrados
-
+# ================================================================
+#   FUNCIÓN PRINCIPAL
+# ================================================================
 
 def validar_filas_contra_grandias_bd(
     filas: List[Dict[str, Any]],
@@ -115,24 +131,31 @@ def validar_filas_contra_grandias_bd(
       - factura_movimiento: Factura de Movimiento  (ej: F099-00028629) → FACTURA
       - producto/contratante: opcionales (detalle, no se buscan)
 
-    Búsquedas:
-         PÓLIZA (existe_recibo):
-        - polizas.recibo          (AES cifrado)
-        - polizas.poliza          (AES cifrado)
-        - polizas.nro             (AES cifrado)
-        - cuotas.cupon            (AES cifrado)
+    Columnas de BÚSQUEDA (cada una = 1 consulta independiente, cifrada + plano):
 
-         FACTURA (existe_factura):
-        - polizas.numero_factura  (AES cifrado)
-        - polizas.numero_factura  (PLANO - legacy)
-        - cuotas.factura          (PLANO)
+         PÓLIZA (existe_recibo = False ↔ no se encuentra en ninguna):
+        - polizas.poliza           | cifrada + plano
+        - polizas.recibo           | cifrada + plano
+        - polizas.nro              | cifrada + plano
+        - cuotas.cupon             | cifrada + plano   (id = cuotas.poliza_id)
 
-    Retorna igual que validacion_bd.py:
-      (resultados, cantidad_existe, cantidad_no_existe)
+         FACTURA (existe_factura = False ↔ no se encuentra en ninguna):
+        - polizas.numero_factura   | cifrada + plano
+        - cuotas.factura           | plano
+
+         VALIDACIÓN CRUZADA (mismo idPoliza):
+        Cuando existen AMBOS campos, ambos deben coincidir en AL MENOS
+        un idPoliza común. Si la factura tiene intersección vacía de
+        ids con la póliza, existe PERO en OTRA póliza → se invalida
+        (existe_factura = False) para evitar falsos VERDES.
     """
+
+    resultados: List[Dict[str, Any]] = []
+    cant_existe = 0
+    cant_no_existe = 0
+
     bd = ConexionBD()
     if not bd.conectar():
-        resultados = []
         for _ in filas:
             resultados.append({
                 "existe_recibo": False,
@@ -145,7 +168,7 @@ def validar_filas_contra_grandias_bd(
     pre = [("SET @SIS_KEY = %s", (SIS_KEY,))]
 
     # ================================================================
-    # PASO 1: Normalizar y recolectar valores únicos de TODAS las filas
+    # PASO 1: Normalizar y recolectar valores únicos
     # ================================================================
     filas_normalizadas: List[Dict[str, str]] = []
     set_nro_contrato: Set[str] = set()
@@ -167,50 +190,119 @@ def validar_filas_contra_grandias_bd(
     lista_facturas = list(set_factura_mov)
 
     # ================================================================
-    # PASO 2: Consultas MASIVAS (7 consultas TOTALES)
+    # PASO 2: Búsqueda por columna INDIVIDUAL (8 + 3 = 11 consultas)
+    #   Son consultas chiquitas. Si alguna falla, las demás siguen.
     # ================================================================
+    ids_poliza_cif: Dict[str, Set[int]] = {}
+    ids_poliza_plan: Dict[str, Set[int]] = {}
+    ids_recibo_cif: Dict[str, Set[int]] = {}
+    ids_recibo_plan: Dict[str, Set[int]] = {}
+    ids_nro_cif: Dict[str, Set[int]] = {}
+    ids_nro_plan: Dict[str, Set[int]] = {}
+    ids_cupon_cif: Dict[str, Set[int]] = {}
+    ids_cupon_plan: Dict[str, Set[int]] = {}
 
-    # --- Búsqueda masiva de N° CONTRATO (póliza / recibo / nro / cupón) ---
-    hits_recibo = _buscar_masivo_cifrado(bd, pre, "p.recibo", lista_contratos)
-    hits_poliza = _buscar_masivo_cifrado(bd, pre, "p.poliza", lista_contratos)
-    hits_nro = _buscar_masivo_cifrado(bd, pre, "p.nro", lista_contratos)
-    hits_cupon = _buscar_masivo_cifrado(bd, pre, "c.cupon", lista_contratos)
-    todos_hits_contrato = hits_recibo | hits_poliza | hits_nro | hits_cupon
+    ids_numfact_cif: Dict[str, Set[int]] = {}
+    ids_numfact_plan: Dict[str, Set[int]] = {}
+    ids_cfactura_plan: Dict[str, Set[int]] = {}
 
-    # --- Búsqueda masiva de FACTURA MOVIMIENTO (F099-XXXXXXX) ---
-    hits_numfact_cif = _buscar_masivo_cifrado(bd, pre, "p.numero_factura", lista_facturas)
-    hits_numfact_plan = _buscar_masivo_plano(bd, pre, "p.numero_factura", lista_facturas)
-    hits_cfactura = _buscar_masivo_plano(bd, pre, "c.factura", lista_facturas)
-    todos_hits_factura = hits_numfact_cif | hits_numfact_plan | hits_cfactura
+    # --- Pólizas (idColumna = idPoliza) ---
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "poliza",
+                    lista_contratos, True, ids_poliza_cif)
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "poliza",
+                    lista_contratos, False, ids_poliza_plan)
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "recibo",
+                    lista_contratos, True, ids_recibo_cif)
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "recibo",
+                    lista_contratos, False, ids_recibo_plan)
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "nro",
+                    lista_contratos, True, ids_nro_cif)
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "nro",
+                    lista_contratos, False, ids_nro_plan)
+
+    # --- Cuotas (idColumna = poliza_id) ---
+    _buscar_columna(bd, pre, "c", "cuotas", "poliza_id", "cupon",
+                    lista_contratos, True, ids_cupon_cif)
+    _buscar_columna(bd, pre, "c", "cuotas", "poliza_id", "cupon",
+                    lista_contratos, False, ids_cupon_plan)
+
+    # --- Facturas ---
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "numero_factura",
+                    lista_facturas, True, ids_numfact_cif)
+    _buscar_columna(bd, pre, "p", "polizas", "idPoliza", "numero_factura",
+                    lista_facturas, False, ids_numfact_plan)
+    _buscar_columna(bd, pre, "c", "cuotas", "poliza_id", "factura",
+                    lista_facturas, False, ids_cfactura_plan)
+
+    ids_por_contrato = _juntar_ids(
+        ids_poliza_cif, ids_poliza_plan,
+        ids_recibo_cif, ids_recibo_plan,
+        ids_nro_cif, ids_nro_plan,
+        ids_cupon_cif, ids_cupon_plan,
+    )
+    ids_por_factura = _juntar_ids(
+        ids_numfact_cif, ids_numfact_plan, ids_cfactura_plan,
+    )
+
+    # Sets planos para búsquedas rápidas
+    todos_hits_contrato: Set[str] = {k for k, s in ids_por_contrato.items() if s}
+    todos_hits_factura: Set[str] = {k for k, s in ids_por_factura.items() if s}
 
     # ================================================================
     # PASO 3: Construir resultados
     # ================================================================
-    resultados: List[Dict[str, Any]] = []
-    cant_existe = 0
-    cant_no_existe = 0
 
     for fn in filas_normalizadas:
         nro_contrato = fn["nro_contrato"]
         factura_mov = fn["factura_movimiento"]
 
-        existe_recibo = False  # N° Contrato encontrado (póliza/recibo)
-        existe_factura = False  # Factura Movimiento encontrada
+        existe_recibo = False
+        existe_factura = False
         detalle_partes: List[str] = []
 
+        # PÓLIZA
         if nro_contrato:
             existe_recibo = nro_contrato in todos_hits_contrato
             if existe_recibo:
-                detalle_partes.append(f"N°Contrato OK")
+                ids_cto = sorted(ids_por_contrato.get(nro_contrato, set()) or [])
+                if ids_cto:
+                    detalle_partes.append(f"Póliza OK (ids {ids_cto[:3]})")
+                else:
+                    detalle_partes.append("Póliza OK")
             else:
-                detalle_partes.append(f"N°Contrato NO encontrado")
+                detalle_partes.append("Póliza NO encontrada")
 
+        # FACTURA
         if factura_mov:
-            existe_factura = factura_mov in todos_hits_factura
-            if existe_factura:
-                detalle_partes.append(f"Factura Mov. OK")
+            factura_existe_sola = factura_mov in todos_hits_factura
+
+            if nro_contrato and existe_recibo and factura_existe_sola:
+                ids_cto = ids_por_contrato.get(nro_contrato, set()) or set()
+                ids_fact = ids_por_factura.get(factura_mov, set()) or set()
+                interseccion = ids_cto & ids_fact
+                if interseccion:
+                    existe_factura = True
+                    lista_ids = sorted(interseccion)[:3]
+                    detalle_partes.append(
+                        f"Factura OK (coincide id {lista_ids})"
+                    )
+                else:
+                    existe_factura = False
+                    lista_cto = sorted(ids_cto)[:3]
+                    lista_fac = sorted(ids_fact)[:3]
+                    detalle_partes.append(
+                        f"Factura en OTRA póliza (cto ids {lista_cto}, fact ids {lista_fac})"
+                    )
             else:
-                detalle_partes.append(f"Factura Mov. NO encontrada")
+                existe_factura = factura_existe_sola
+                if existe_factura:
+                    ids_f = sorted(ids_por_factura.get(factura_mov, set()) or [])
+                    if ids_f:
+                        detalle_partes.append(f"Factura OK (ids {ids_f[:3]})")
+                    else:
+                        detalle_partes.append("Factura OK")
+                else:
+                    detalle_partes.append("Factura NO encontrada")
 
         tiene_algun_doc = bool(nro_contrato or factura_mov)
 
@@ -223,7 +315,7 @@ def validar_filas_contra_grandias_bd(
                 existe_general = existe_factura
         else:
             existe_general = False
-            detalle_partes.append("Sin N°Contrato ni Factura Mov. para validar")
+            detalle_partes.append("Sin Póliza ni Factura para validar")
 
         if existe_general:
             cant_existe += 1
@@ -237,5 +329,9 @@ def validar_filas_contra_grandias_bd(
             "detalle": "  |  ".join(detalle_partes),
         })
 
-    bd.desconectar()
+    try:
+        bd.desconectar()
+    except Exception:
+        pass
+
     return resultados, cant_existe, cant_no_existe

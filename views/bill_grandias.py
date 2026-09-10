@@ -1,7 +1,7 @@
 import os
 import re
 import traceback
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 
 import tkinter as tk
@@ -379,6 +379,464 @@ def _extraer_por_xranges(page, columnas_header: List[Tuple[str, float, float, fl
     return filas_procesadas
 
 
+_ANCLA_NRO_CONTRATO_RE = re.compile(r"^\d{6,11}$")
+_ANCLA_FACTURA_MOV_RE = re.compile(r"^F\d{2,3}\-\d{5,10}$")
+_ANCLA_FECHA_SOLO_RE = re.compile(r"^(?:\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|\d{4}\-\d{1,2}\-\d{1,2})$")
+_ANCLA_MONTO_SOLO_RE = re.compile(r"^\-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?$")
+_ANCLA_ORDEN_COMISION_RE = re.compile(r"^[\-A-Za-z0-9]{4,}\-LQ(?:\-LQ)?\-(?:[\-A-Za-z0-9]{4,})$")
+
+
+def _construir_rangos_globales(page):
+    columnas_header = _encontrar_header_y_columnas(page)
+    if not columnas_header:
+        return None
+    col_x_centers = sorted(
+        [(c[0], c[1], c[2], (c[1] + c[2]) / 2) for c in columnas_header],
+        key=lambda t: t[3],
+    )
+    rangos: List[Tuple[str, float, float]] = []
+    for idx, (campo, x0, x1, xc) in enumerate(col_x_centers):
+        if idx + 1 < len(col_x_centers):
+            next_xc = col_x_centers[idx + 1][3]
+            x1_ext = (x1 + next_xc) / 2
+        else:
+            x1_ext = x1 + 60
+        if idx > 0:
+            prev_x1 = col_x_centers[idx - 1][2]
+            x0_ext = (prev_x1 + x0) / 2
+        else:
+            x0_ext = max(0, x0 - 10)
+        rangos.append((campo, x0_ext, x1_ext))
+    header_y = columnas_header[0][3]
+    return (rangos, header_y)
+
+
+def _asignar_palabras_a_campos_por_rangos(
+    pals: List[Any],
+    rangos: List[Tuple[str, float, float]],
+) -> Dict[str, List[str]]:
+    celda_por_campo: Dict[str, List[str]] = {c: [] for c, _, _ in rangos}
+    for p in pals:
+        t = p["text"].strip()
+        if not t:
+            continue
+        xc_p = (p["x0"] + p["x1"]) / 2
+        idx_mejor = -1
+        dist_mejor = 1e9
+        for idx, (campo, xr0, xr1) in enumerate(rangos):
+            if xr0 <= xc_p <= xr1:
+                idx_mejor = idx
+                dist_mejor = 0
+                break
+            d = min(abs(xc_p - xr0), abs(xc_p - xr1))
+            if d < dist_mejor:
+                dist_mejor = d
+                idx_mejor = idx
+        if idx_mejor >= 0 and dist_mejor < 120:
+            campo = rangos[idx_mejor][0]
+            celda_por_campo[campo].append(t)
+    return celda_por_campo
+
+
+def _finalizar_fila_dict(celda_por_campo: Dict[str, List[str]]) -> Optional[Dict[str, Any]]:
+    out: Dict[str, Any] = {
+        "nro_orden": "", "nro_contrato": "", "grupo_rmi": "", "contratante": "",
+        "producto": "", "agente": "", "factura_movimiento": "", "fecha_emision": "",
+        "facturada_soles": Decimal("0"), "comision_soles": Decimal("0"),
+        "porcentaje_comision": Decimal("0"), "fecha_disponible": "",
+        "orden_comision": "", "estado_comision": "", "fecha_registro": "",
+    }
+    for campo, tokens in celda_por_campo.items():
+        if not tokens:
+            continue
+        joined = " ".join(tokens).strip()
+        if campo in ("facturada_soles", "comision_soles"):
+            out[campo] = _to_decimal_g(joined)
+        elif campo == "porcentaje_comision":
+            pm = _PORCENTAJE_SOLO_NUM_RE.match(joined)
+            if pm:
+                out[campo] = _round2_g(Decimal(pm.group(1)))
+            else:
+                out[campo] = _to_decimal_g(joined)
+        elif campo.startswith("fecha_"):
+            out[campo] = _normalizar_fecha(joined)
+        else:
+            out[campo] = re.sub(r"\s{2,}", " ", joined).strip(" .,-()")
+
+    if out["porcentaje_comision"] == 0 and out["facturada_soles"] > 0 and out["comision_soles"] > 0:
+        out["porcentaje_comision"] = _round2_g(out["comision_soles"] * Decimal("100") / out["facturada_soles"])
+    if out["porcentaje_comision"] == 0 and out["facturada_soles"] > 0:
+        out["porcentaje_comision"] = Decimal("25.00")
+        out["comision_soles"] = _round2_g(out["facturada_soles"] * Decimal("25.00") / Decimal("100"))
+    if out["factura_movimiento"]:
+        fm = _FACTURA_MOV_RE_G.search(out["factura_movimiento"])
+        if fm:
+            out["factura_movimiento"] = fm.group(1)
+    if out["orden_comision"]:
+        odm = _NRO_DOC_RE_G.search(out["orden_comision"])
+        if odm:
+            out["orden_comision"] = re.sub(r"[()]+", "", odm.group(1)).strip("-")
+    if out["nro_contrato"]:
+        nc_limpio = re.sub(r"\D", "", out["nro_contrato"])
+        if len(nc_limpio) < 6:
+            out["nro_contrato"] = ""
+        else:
+            out["nro_contrato"] = nc_limpio
+
+    if out["facturada_soles"] == 0 and out["comision_soles"] == 0:
+        return None
+    if (
+        not out["factura_movimiento"] and not out["orden_comision"]
+        and not out["contratante"] and not out["nro_contrato"]
+    ):
+        return None
+    return out
+
+
+def _extraer_filas_por_anclas(
+    page,
+    rangos_globales: Optional[List[Tuple[str, float, float]]],
+    header_y_primera_pag: Optional[float],
+    page_idx: int,
+) -> List[Dict[str, Any]]:
+    palabras = page.extract_words(keep_blank_chars=False, x_tolerance=2, y_tolerance=3)
+    if not palabras:
+        return []
+
+    def _y(p):
+        return (p["top"] + p["bottom"]) / 2
+
+    filas_pals: List[Tuple[float, List[Any]]] = []
+    tol_y_filas = 8.0
+    min_y = 0.0
+    if page_idx == 0 and header_y_primera_pag is not None:
+        min_y = header_y_primera_pag + 6
+    for p in sorted(palabras, key=lambda w: (_y(w), w["x0"])):
+        yp = _y(p)
+        if yp < min_y:
+            continue
+        puesta = False
+        for ref_y, pf in filas_pals:
+            if abs(ref_y - yp) <= tol_y_filas:
+                pf.append(p)
+                puesta = True
+                break
+        if not puesta:
+            filas_pals.append((yp, [p]))
+
+    filas_procesadas: List[Dict[str, Any]] = []
+    for y_fila, pals in filas_pals:
+        if not pals:
+            continue
+        pals_sorted = sorted(pals, key=lambda pp: (pp["x0"], pp["top"]))
+        textos = [pp["text"].strip() for pp in pals_sorted if pp["text"].strip()]
+        if not textos:
+            continue
+
+        tiene_nro_contrato = False
+        tiene_fact_mov = False
+        tiene_fecha = False
+        tiene_monto = False
+        tiene_orden_comision = False
+        tiene_guion_nro_cto = False
+        cant_numeros = 0
+        for t in textos:
+            if _ANCLA_NRO_CONTRATO_RE.match(t):
+                tiene_nro_contrato = True
+            if t == "-":
+                tiene_guion_nro_cto = True
+            if _ANCLA_FACTURA_MOV_RE.match(t):
+                tiene_fact_mov = True
+            if _ANCLA_FECHA_SOLO_RE.match(t):
+                tiene_fecha = True
+            if _ANCLA_ORDEN_COMISION_RE.match(t):
+                tiene_orden_comision = True
+            if _ANCLA_MONTO_SOLO_RE.match(t):
+                num_limpio = t.replace(",", "").replace(".", "")
+                if num_limpio.lstrip("-").isdigit():
+                    cant_numeros += 1
+                    if "." in t or "," in t:
+                        tiene_monto = True
+
+        nro_cto_ok = tiene_nro_contrato or (tiene_guion_nro_cto and tiene_fact_mov)
+        fila_valida = False
+        if nro_cto_ok and (tiene_fact_mov or tiene_fecha or tiene_orden_comision):
+            fila_valida = True
+        elif tiene_fact_mov and (tiene_fecha or nro_cto_ok or tiene_orden_comision):
+            fila_valida = True
+        elif tiene_fecha and tiene_monto and cant_numeros >= 3:
+            fila_valida = True
+        elif tiene_orden_comision and cant_numeros >= 2 and len(textos) >= 6:
+            fila_valida = True
+        elif (nro_cto_ok or tiene_fact_mov) and cant_numeros >= 2:
+            fila_valida = True
+        elif nro_cto_ok and tiene_monto:
+            fila_valida = True
+        elif tiene_fact_mov and tiene_monto:
+            fila_valida = True
+
+        if not fila_valida:
+            continue
+
+        if rangos_globales:
+            celdas = _asignar_palabras_a_campos_por_rangos(pals_sorted, rangos_globales)
+        else:
+            celdas: Dict[str, List[str]] = {
+                "nro_orden": [], "nro_contrato": [], "grupo_rmi": [], "contratante": [],
+                "producto": [], "agente": [], "factura_movimiento": [], "fecha_emision": [],
+                "facturada_soles": [], "porcentaje_comision": [], "comision_soles": [],
+                "fecha_disponible": [], "orden_comision": [], "estado_comision": [], "fecha_registro": [],
+            }
+            resto = textos
+            if resto:
+                celdas["nro_orden"] = [resto[0]]
+                resto = resto[1:]
+            montos_encontrados: List[str] = []
+            fechas_encontradas: List[str] = []
+            for tk in resto:
+                if _ANCLA_NRO_CONTRATO_RE.match(tk) and not celdas["nro_contrato"]:
+                    celdas["nro_contrato"] = [tk]
+                elif tk == "-" and not celdas["nro_contrato"]:
+                    celdas["nro_contrato"] = [""]
+                elif _ANCLA_FACTURA_MOV_RE.match(tk):
+                    celdas["factura_movimiento"] = [tk]
+                elif _ANCLA_FECHA_SOLO_RE.match(tk):
+                    fechas_encontradas.append(tk)
+                elif _ANCLA_MONTO_SOLO_RE.match(tk) and ("." in tk or "," in tk):
+                    montos_encontrados.append(tk)
+                elif _ANCLA_ORDEN_COMISION_RE.match(tk):
+                    celdas["orden_comision"] = [tk]
+                elif re.match(r"^(?:EN\s+LIQUIDACION|LIQUIDADO|PENDIENTE|EN\s+PROCESO|ANULADO|PAGADO)$", tk, re.IGNORECASE):
+                    celdas["estado_comision"] = [tk]
+                elif re.match(r"^(?:SCTR|VIDA|SALUD|INCENDIO|VEHICULAR|AUTOMOTRIZ)$", tk, re.IGNORECASE):
+                    celdas["producto"] = [tk]
+                elif not celdas["contratante"]:
+                    celdas["contratante"] = [tk]
+                elif not celdas["producto"]:
+                    celdas["producto"] = [tk]
+                elif not celdas["agente"]:
+                    celdas["agente"] = [tk]
+                else:
+                    if not celdas["grupo_rmi"]:
+                        celdas["grupo_rmi"] = [tk]
+                    else:
+                        celdas["contratante"].append(tk)
+            if len(fechas_encontradas) >= 1:
+                celdas["fecha_emision"] = [fechas_encontradas[0]]
+            if len(fechas_encontradas) >= 2:
+                celdas["fecha_disponible"] = [fechas_encontradas[1]]
+            if len(fechas_encontradas) >= 3:
+                celdas["fecha_registro"] = [fechas_encontradas[-1]]
+            if len(montos_encontrados) >= 1:
+                celdas["facturada_soles"] = [montos_encontrados[0]]
+            if len(montos_encontrados) >= 3:
+                celdas["porcentaje_comision"] = [montos_encontrados[1]]
+                celdas["comision_soles"] = [montos_encontrados[2]]
+            elif len(montos_encontrados) == 2:
+                pct_candidato = _to_decimal_g(montos_encontrados[1])
+                if Decimal("1") <= pct_candidato <= Decimal("60"):
+                    celdas["porcentaje_comision"] = [montos_encontrados[1]]
+                    if len(montos_encontrados) >= 3:
+                        celdas["comision_soles"] = [montos_encontrados[2]]
+                else:
+                    celdas["comision_soles"] = [montos_encontrados[1]]
+
+        row_dict = _finalizar_fila_dict(celdas)
+        if row_dict is None:
+            continue
+        filas_procesadas.append(row_dict)
+    return filas_procesadas
+
+
+_LINEA_INICIO_ITEM_RE = re.compile(r"^\s*(\d{1,3})\s+(.*)$")
+_LINEA_INICIO_TOTAL_RE = re.compile(r"^\s*TOTAL\s*[:：]?", re.IGNORECASE)
+_ESTADO_COMISION_RE = re.compile(
+    r"(EN\s+LIQUIDACION|LIQUIDADO|PENDIENTE|EN\s+PROCESO|ANULADO|PAGADO|OBSERVADO)",
+    re.IGNORECASE,
+)
+_NRO_DOC_FINAL_RE = re.compile(
+    r"(\d{3,6}\-LQ(?:\-LQ)?\-(?:[\-A-Za-z0-9]{4,}))",
+)
+
+
+def _split_tokens_respetando_fechas_estados(linea: str) -> List[str]:
+    tokens: List[str] = []
+    i = 0
+    s = linea.strip()
+    n = len(s)
+    while i < n:
+        if s[i].isspace():
+            i += 1
+            continue
+        j = i
+        if s[i].isdigit() and (i + 2 < n):
+            m1 = re.match(r"\d{4}\-\d{1,2}\-\d{1,2}", s[i:])
+            m2 = re.match(r"\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}", s[i:])
+            if m1:
+                tokens.append(m1.group(0))
+                i += len(m1.group(0))
+                continue
+            if m2:
+                tokens.append(m2.group(0))
+                i += len(m2.group(0))
+                continue
+        if s[i:i + 2].upper() == "EN":
+            m3 = re.match(r"EN\s+LIQUIDACION|EN\s+PROCESO", s[i:], re.IGNORECASE)
+            if m3:
+                tokens.append(m3.group(0))
+                i += len(m3.group(0))
+                continue
+        while j < n and not s[j].isspace():
+            j += 1
+        if j > i:
+            tokens.append(s[i:j])
+        i = j
+    return tokens
+
+
+def _parsear_fila_tokens_grandia(tokens: List[str]) -> Optional[Dict[str, Any]]:
+    if not tokens:
+        return None
+    celdas: Dict[str, List[str]] = {
+        "nro_orden": [], "nro_contrato": [], "grupo_rmi": [], "contratante": [],
+        "producto": [], "agente": [], "factura_movimiento": [], "fecha_emision": [],
+        "facturada_soles": [], "porcentaje_comision": [], "comision_soles": [],
+        "fecha_disponible": [], "orden_comision": [], "estado_comision": [], "fecha_registro": [],
+    }
+    if tokens and tokens[0].isdigit():
+        celdas["nro_orden"] = [tokens[0]]
+        resto_tokens = tokens[1:]
+    else:
+        resto_tokens = list(tokens)
+
+    montos: List[str] = []
+    fechas: List[str] = []
+
+    for idx_tk, tk in enumerate(resto_tokens):
+        if _ANCLA_NRO_CONTRATO_RE.match(tk) and not celdas["nro_contrato"]:
+            celdas["nro_contrato"] = [tk]
+            continue
+        if tk == "-" and not celdas["nro_contrato"]:
+            celdas["nro_contrato"] = [""]
+            continue
+        if _ANCLA_FACTURA_MOV_RE.match(tk):
+            celdas["factura_movimiento"] = [tk]
+            continue
+        if _ANCLA_FECHA_SOLO_RE.match(tk):
+            fechas.append(tk)
+            continue
+        if _ANCLA_MONTO_SOLO_RE.match(tk):
+            if "." in tk or "," in tk:
+                montos.append(tk)
+            continue
+        if _ANCLA_ORDEN_COMISION_RE.match(tk) or _NRO_DOC_FINAL_RE.match(tk):
+            celdas["orden_comision"] = [tk]
+            continue
+        m_est = _ESTADO_COMISION_RE.fullmatch(tk.upper().replace("  ", " "))
+        if m_est:
+            celdas["estado_comision"] = [tk]
+            continue
+        if re.match(r"^(?:SCTR|VIDA|SALUD|INCENDIO|VEHICULAR|AUTOMOTRIZ|FAP|VIDA\s*LEY|SALUD\s*EPS)$", tk, re.IGNORECASE):
+            celdas["producto"] = [tk]
+            continue
+        if not celdas["contratante"]:
+            celdas["contratante"] = [tk]
+            continue
+        hay_factura_antes = any(_ANCLA_FACTURA_MOV_RE.match(x) for x in resto_tokens[:idx_tk])
+        if hay_factura_antes and not celdas["agente"]:
+            celdas["agente"] = [tk]
+        elif hay_factura_antes:
+            celdas["agente"].append(tk)
+        elif not celdas["producto"]:
+            celdas["contratante"].append(tk)
+        elif not celdas["agente"]:
+            celdas["agente"] = [tk]
+        else:
+            celdas["contratante"].append(tk)
+
+    if len(fechas) >= 1:
+        celdas["fecha_emision"] = [fechas[0]]
+    if len(fechas) >= 2:
+        celdas["fecha_disponible"] = [fechas[1]]
+    if len(fechas) >= 3:
+        celdas["fecha_registro"] = [fechas[-1]]
+    if len(montos) >= 1:
+        celdas["facturada_soles"] = [montos[0]]
+    if len(montos) >= 3:
+        celdas["porcentaje_comision"] = [montos[1]]
+        celdas["comision_soles"] = [montos[2]]
+    elif len(montos) == 2:
+        pct = _to_decimal_g(montos[1])
+        if Decimal("1") <= pct <= Decimal("60"):
+            celdas["porcentaje_comision"] = [montos[1]]
+        else:
+            celdas["comision_soles"] = [montos[1]]
+    return _finalizar_fila_dict(celdas)
+
+
+def _extraer_por_texto_plano_paginas(pdf) -> List[Dict[str, Any]]:
+    resultado: List[Dict[str, Any]] = []
+    todas_lineas: List[str] = []
+    for page in pdf.pages:
+        try:
+            txt = page.extract_text() or ""
+        except Exception:
+            txt = ""
+        if txt:
+            todas_lineas.extend(txt.split("\n"))
+
+    lineas_normalizadas: List[str] = []
+    for raw in todas_lineas:
+        linea = raw.strip()
+        if not linea:
+            continue
+        if _LINEA_INICIO_TOTAL_RE.match(linea):
+            break
+        norm = re.sub(r"\s{2,}", " ", linea)
+        lineas_normalizadas.append(norm)
+
+    bloques: List[Tuple[int, List[str]]] = []
+    acum: List[str] = []
+    item_actual: Optional[int] = None
+    for linea in lineas_normalizadas:
+        m = _LINEA_INICIO_ITEM_RE.match(linea)
+        if m:
+            n_item = int(m.group(1))
+            resto = m.group(2)
+            if 1 <= n_item <= 5000:
+                if item_actual is not None and acum:
+                    bloques.append((item_actual, acum))
+                item_actual = n_item
+                acum = [resto] if resto else []
+                continue
+        if item_actual is not None:
+            if len(linea) < 3:
+                continue
+            acum.append(linea)
+    if item_actual is not None and acum:
+        bloques.append((item_actual, acum))
+
+    for n_item, pedazos in bloques:
+        linea_completa = " ".join(pedazos).strip()
+        if not linea_completa:
+            continue
+        tokens = _split_tokens_respetando_fechas_estados(f"{n_item} {linea_completa}")
+        fila = _parsear_fila_tokens_grandia(tokens)
+        if fila is None:
+            continue
+        fila["nro_orden"] = str(n_item)
+        resultado.append(fila)
+    return resultado
+
+
+def _clave_fila_unica(f: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    fm = (f.get("factura_movimiento") or "").strip()
+    nc = (f.get("nro_contrato") or "").strip()
+    fe = (f.get("fecha_emision") or "").strip()
+    monto = f"{_round2_g(f.get('facturada_soles') or Decimal('0')):.2f}"
+    return (nc, fm, fe, monto)
+
+
 # ============================================================
 #   FUNCIÓN PRINCIPAL DE EXTRACCIÓN
 # ============================================================
@@ -391,84 +849,107 @@ def extraer_tablas_grandia(pdf_path: str) -> List[Dict[str, Any]]:
 
     filas: List[Dict[str, Any]] = []
     with pdfplumber.open(pdf_path) as pdf:
-        for page_idx, page in enumerate(pdf.pages):
-            page_filas: List[Dict[str, Any]] = []
-            extraido = False
+        estrategia_texto = _extraer_por_texto_plano_paginas(pdf)
+        if estrategia_texto and len(estrategia_texto) >= 20:
+            filas.extend(estrategia_texto)
 
-            # 1) Estrategia PRINCIPAL y MÁS ROBUSTA: detectar header + rangos X
-            columnas_header = _encontrar_header_y_columnas(page)
-            if columnas_header:
-                xr = _extraer_por_xranges(page, columnas_header)
-                if xr:
-                    page_filas.extend(xr)
+        rangos_globales: Optional[List[Tuple[str, float, float]]] = None
+        header_y_ppal: Optional[float] = None
+        if pdf.pages:
+            info_rg = _construir_rangos_globales(pdf.pages[0])
+            if info_rg:
+                rangos_globales, header_y_ppal = info_rg
+
+        if len(filas) < 100:
+            for page_idx, page in enumerate(pdf.pages):
+                page_filas: List[Dict[str, Any]] = []
+                extraido = False
+
+                anclas_result = _extraer_filas_por_anclas(page, rangos_globales, header_y_ppal, page_idx)
+                if anclas_result:
+                    page_filas.extend(anclas_result)
                     extraido = True
 
-            # 2) Fallback: extract_table con varias estrategias
-            if not extraido:
-                estrategias = [
-                    {
-                        "vertical_strategy": "lines",
-                        "horizontal_strategy": "text",
-                        "join_tolerance": 5,
-                        "edge_min_length": 2,
-                        "snap_tolerance": 8,
-                        "snap_x_tolerance": 8,
-                        "snap_y_tolerance": 6,
-                        "min_words_vertical": 1,
-                        "min_words_horizontal": 1,
-                        "intersection_tolerance": 6,
-                    },
-                    {
-                        "vertical_strategy": "lines_strict",
-                        "horizontal_strategy": "text",
-                        "join_tolerance": 5,
-                        "edge_min_length": 1,
-                        "snap_tolerance": 8,
-                        "min_words_vertical": 1,
-                        "min_words_horizontal": 1,
-                    },
-                    {
-                        "vertical_strategy": "text",
-                        "horizontal_strategy": "text",
-                        "intersection_tolerance": 12,
-                        "snap_tolerance": 8,
-                        "min_words_vertical": 1,
-                        "min_words_horizontal": 1,
-                    },
-                    {
-                        "vertical_strategy": "lines",
-                        "horizontal_strategy": "lines",
-                        "join_tolerance": 4,
-                        "edge_min_length": 2,
-                        "snap_tolerance": 6,
-                        "min_words_vertical": 1,
-                        "min_words_horizontal": 1,
-                    },
-                ]
-                for settings in estrategias:
-                    try:
-                        t = page.extract_table(table_settings=settings)
-                    except Exception:
-                        t = None
-                    if not t:
-                        continue
-                    rows_page = _procesar_tabla_grandia_con_encabezado(t)
-                    if rows_page:
-                        page_filas.extend(rows_page)
+                if not extraido:
+                    columnas_header = _encontrar_header_y_columnas(page)
+                    if columnas_header:
+                        xr = _extraer_por_xranges(page, columnas_header)
+                        if xr:
+                            page_filas.extend(xr)
+                            extraido = True
+
+                if not extraido:
+                    estrategias = [
+                        {
+                            "vertical_strategy": "lines",
+                            "horizontal_strategy": "text",
+                            "join_tolerance": 5,
+                            "edge_min_length": 2,
+                            "snap_tolerance": 8,
+                            "snap_x_tolerance": 8,
+                            "snap_y_tolerance": 6,
+                            "min_words_vertical": 1,
+                            "min_words_horizontal": 1,
+                            "intersection_tolerance": 6,
+                        },
+                        {
+                            "vertical_strategy": "lines_strict",
+                            "horizontal_strategy": "text",
+                            "join_tolerance": 5,
+                            "edge_min_length": 1,
+                            "snap_tolerance": 8,
+                            "min_words_vertical": 1,
+                            "min_words_horizontal": 1,
+                        },
+                        {
+                            "vertical_strategy": "text",
+                            "horizontal_strategy": "text",
+                            "intersection_tolerance": 12,
+                            "snap_tolerance": 8,
+                            "min_words_vertical": 1,
+                            "min_words_horizontal": 1,
+                        },
+                        {
+                            "vertical_strategy": "lines",
+                            "horizontal_strategy": "lines",
+                            "join_tolerance": 4,
+                            "edge_min_length": 2,
+                            "snap_tolerance": 6,
+                            "min_words_vertical": 1,
+                            "min_words_horizontal": 1,
+                        },
+                    ]
+                    for settings in estrategias:
+                        try:
+                            t = page.extract_table(table_settings=settings)
+                        except Exception:
+                            t = None
+                        if not t:
+                            continue
+                        rows_page = _procesar_tabla_grandia_con_encabezado(t)
+                        if rows_page:
+                            page_filas.extend(rows_page)
+                            extraido = True
+                            break
+
+                if not extraido:
+                    rows_legacy = _extraer_grandia_por_patrones_page(page)
+                    if rows_legacy:
+                        page_filas.extend(rows_legacy)
                         extraido = True
-                        break
 
-            # 3) Segundo fallback: parser regex por coordenadas antiguo
-            if not extraido:
-                rows_legacy = _extraer_grandia_por_patrones_page(page)
-                if rows_legacy:
-                    page_filas.extend(rows_legacy)
-                    extraido = True
+                filas.extend(page_filas)
 
-            filas.extend(page_filas)
+    vistas: Set[Tuple[str, str, str, str]] = set()
+    unicas: List[Dict[str, Any]] = []
+    for f in filas:
+        clave = _clave_fila_unica(f)
+        if clave in vistas:
+            continue
+        vistas.add(clave)
+        unicas.append(f)
+    filas = unicas
 
-    # Post-procesamiento GLOBAL: si porcentaje sigue 0 en todas las filas
-    # y hay facturado > 0, aplicar 25% por defecto (estándar Grandia)
     for f in filas:
         if f["facturada_soles"] > 0:
             if f["porcentaje_comision"] == 0:
@@ -1119,6 +1600,7 @@ def parsear_fila_grandia_por_patrones(celdas) -> Optional[Dict[str, Any]]:
 
 class TableroFacturacionGrandias(tk.Frame):
     COLUMNS = (
+        ("nro_item",             "N°",                   55),
         ("nro_contrato",         "N° Contrato",          100),
         ("contratante",          "Contratante",          280),
         ("producto",             "Producto",              90),
@@ -1267,7 +1749,12 @@ class TableroFacturacionGrandias(tk.Frame):
             width = item[2]
             align = item[3] if len(item) > 3 else "w"
             self.tree.heading(cid, text=text)
-            anchor = "e" if align in ("moneda", "porcentaje", "e") else "w"
+            if cid == "nro_item":
+                anchor = "center"
+            elif align in ("moneda", "porcentaje", "e"):
+                anchor = "e"
+            else:
+                anchor = "w"
             stretch = (cid == "contratante")
             self.tree.column(cid, width=width, anchor=anchor, stretch=stretch)
 
@@ -1329,11 +1816,19 @@ class TableroFacturacionGrandias(tk.Frame):
         for f in filas:
             self._append_row(f)
 
+        self._renumerar()
         self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
         self.lbl_estado.configure(
             text=f"Importado: {len(filas)} filas desde {os.path.basename(path)}  |  Total registros: {len(self._rows)}",
             fg="#059669")
+        messagebox.showinfo(
+            "PDF importado correctamente",
+            f"Se insertaron {len(filas)} filas correctamente desde:\n"
+            f"{os.path.basename(path)}\n\n"
+            f"Total de registros en la tabla: {len(self._rows)}",
+            parent=self,
+        )
 
     def _agregar_fila(self):
         fila = {
@@ -1345,6 +1840,7 @@ class TableroFacturacionGrandias(tk.Frame):
             "orden_comision": "", "estado_comision": "EN LIQUIDACIÓN", "fecha_registro": "",
         }
         self._append_row(fila)
+        self._renumerar()
         self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
 
@@ -1356,7 +1852,18 @@ class TableroFacturacionGrandias(tk.Frame):
         data["comision_soles"] = _round2_g(_to_decimal_g(data.get("comision_soles")))
         data["porcentaje_comision"] = _round2_g(_to_decimal_g(data.get("porcentaje_comision")))
         self._rows.append(data)
-        self.tree.insert("", "end", iid=uid, values=self._valores_tabla(data))
+        self.tree.insert("", "end", iid=uid, values=self._valores_tabla(data, len(self._rows)))
+
+    def _renumerar(self):
+        """
+        Vuelve a asignar los valores de la columna N° (primera columna) en toda
+        la tabla para que coincidan con el orden visual del Treeview (1..N).
+        """
+        iids = self.tree.get_children()
+        for pos, iid in enumerate(iids, start=1):
+            idx = pos - 1
+            if 0 <= idx < len(self._rows):
+                self.tree.item(iid, values=self._valores_tabla(self._rows[idx], pos))
 
     def _eliminar_fila(self):
         sel = self.tree.selection()
@@ -1378,6 +1885,7 @@ class TableroFacturacionGrandias(tk.Frame):
         for idx in sorted(idxs, reverse=True):
             if 0 <= idx < len(self._rows):
                 del self._rows[idx]
+        self._renumerar()
         self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
 
@@ -1578,18 +2086,21 @@ class TableroFacturacionGrandias(tk.Frame):
             row[col_id] = _round2_g(_to_decimal_g(valor_nuevo))
         elif col_id.startswith("fecha_"):
             row[col_id] = _normalizar_fecha(valor_nuevo)
-        else:
+        elif col_id != "nro_item":
             row[col_id] = valor_nuevo
-        self.tree.item(iid, values=self._valores_tabla(row))
+        self.tree.item(iid, values=self._valores_tabla(row, index + 1))
         self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
 
     # --- Helpers
-    def _valores_tabla(self, row: Dict[str, Any]) -> Tuple[str, ...]:
+    def _valores_tabla(self, row: Dict[str, Any], nro_item: int = 0) -> Tuple[str, ...]:
         values: List[str] = []
         for item in self.COLUMNS:
             cid = item[0]
             tipo = item[3] if len(item) > 3 else "text"
+            if cid == "nro_item":
+                values.append(f"{int(nro_item)}")
+                continue
             raw = row.get(cid, "")
             if tipo == "moneda":
                 v = _to_decimal_g(raw)
