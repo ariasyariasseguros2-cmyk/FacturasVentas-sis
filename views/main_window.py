@@ -77,6 +77,10 @@ class MainWindow(tk.Tk):
         self._paginas = []
         self._fecha_job = None
         self._metricas_job = None
+        self._metricas_running = False
+        self._grafico_job = None
+        self._grafico_running = False
+        self._grafico_token = 0
         self._destroying = False
         self._grafico_moneda = "PEN"
 
@@ -91,7 +95,7 @@ class MainWindow(tk.Tk):
         self._actualizar_fecha()
         self._cambiar_pagina(0)
         self.actualizar_metricas_dashboard()
-        self._programar_actualizacion_metricas(5000)
+        self._programar_actualizacion_metricas(30000)
 
     def _maximizar_ventana(self):
         try:
@@ -552,11 +556,13 @@ class MainWindow(tk.Tk):
                                                 height=320)
         self._canvas_grafico_diario.pack(fill="both", expand=True)
         self._canvas_grafico_diario.bind("<Configure>",
-                                         lambda e: self._actualizar_grafico_diario())
+                                         lambda e: self._programar_actualizacion_grafico(250))
 
         return page
 
     def _cambiar_moneda_grafico(self, moneda: str):
+        if self._grafico_moneda == moneda:
+            return
         self._grafico_moneda = moneda
         pen_activo = moneda == "PEN"
         usd_activo = moneda == "USD"
@@ -564,7 +570,26 @@ class MainWindow(tk.Tk):
                                        fg="#ffffff" if pen_activo else "#64748b")
         self._btn_moneda_usd.configure(bg="#2563eb" if usd_activo else "#f1f5f9",
                                        fg="#ffffff" if usd_activo else "#64748b")
+
+        try:
+            if self._grafico_job is not None:
+                self.after_cancel(self._grafico_job)
+                self._grafico_job = None
+        except Exception:
+            pass
+
+        self._grafico_token += 1
         self._actualizar_grafico_diario()
+
+    def _programar_actualizacion_grafico(self, intervalo_ms: int = 250):
+        if self._destroying or not self.winfo_exists():
+            return
+        try:
+            if self._grafico_job is not None:
+                self.after_cancel(self._grafico_job)
+        except Exception:
+            pass
+        self._grafico_job = self.after(intervalo_ms, lambda: self._actualizar_grafico_diario())
 
     def _formatear_escala_y(self, valor: float) -> str:
         if valor >= 1_000_000:
@@ -689,9 +714,38 @@ class MainWindow(tk.Tk):
         canvas.create_line(pad_izq, pad_sup + plot_h, pad_izq + plot_w, pad_sup + plot_h,
                            fill="#cbd5e1")
 
+    def _desbloquear_grafico_diario(self):
+        if self._destroying or not self.winfo_exists():
+            return
+        self._grafico_running = False
+
     def _actualizar_grafico_diario(self):
+        if self._destroying or not self.winfo_exists():
+            return
+
+        token = self._grafico_token
+        call_token = token
+
+        def _trabajo(token_local):
+            try:
+                datos = DashboardController.obtener_datos_grafico_diario(self._grafico_moneda)
+                if self.winfo_exists() and token_local == self._grafico_token:
+                    self.after(0, lambda: self._mostrar_grafico_diario(datos))
+            except Exception as e:
+                print(f"[Dashboard] Error al actualizar gráfico diario: {e}")
+                if self.winfo_exists() and token_local == self._grafico_token:
+                    self.after(0, lambda: self._mostrar_grafico_diario({}))
+            finally:
+                if self.winfo_exists() and token_local == self._grafico_token:
+                    self.after(0, self._desbloquear_grafico_diario)
+
+        self._grafico_running = True
+        threading.Thread(target=_trabajo, args=(call_token,), daemon=True).start()
+
+    def _mostrar_grafico_diario(self, datos: Dict[str, Any]):
+        if self._destroying or not self.winfo_exists():
+            return
         try:
-            datos = DashboardController.obtener_datos_grafico_diario(self._grafico_moneda)
             simbolo = datos.get("simbolo", "S/")
             totales = datos.get("totales", {})
             pn = totales.get("prima_neta", 0) or 0
@@ -703,10 +757,10 @@ class MainWindow(tk.Tk):
                 self._badge_prima_cigv.configure(text=f"{simbolo} {pcigv:,.2f}")
             if hasattr(self, "_badge_comision"):
                 self._badge_comision.configure(text=f"{simbolo} {co:,.2f}")
-            if hasattr(self, "_canvas_grafico_diario"):
-                self.after(10, lambda: self._dibujar_grafico_diario_canvas(datos))
+            if hasattr(self, "_canvas_grafico_diario") and datos:
+                self._dibujar_grafico_diario_canvas(datos)
         except Exception as e:
-            print(f"[Dashboard] Error al actualizar gráfico diario: {e}")
+            print(f"[Dashboard] Error al pintar gráfico diario: {e}")
 
     def _crear_pagina_generica(self, parent: tk.Widget, nombre: str) -> tk.Frame:
         page = tk.Frame(parent, bg=self.COLORS["content_bg"])
@@ -766,8 +820,32 @@ class MainWindow(tk.Tk):
         return f"{d.day} de {meses[d.month - 1]} de {d.year}"
 
     def actualizar_metricas_dashboard(self):
+        if self._destroying or not self.winfo_exists():
+            return
+        if self._metricas_running:
+            return
+
+        self._metricas_running = True
+
+        def _trabajo():
+            try:
+                metricas = DashboardController.obtener_metricas_hoy()
+                if self.winfo_exists():
+                    self.after(0, lambda: self._mostrar_metricas_dashboard(metricas))
+            except Exception as e:
+                print(f"[Dashboard] Error al actualizar métricas: {e}")
+                if self.winfo_exists():
+                    self.after(0, lambda: self._mostrar_metricas_dashboard({}))
+            finally:
+                if self.winfo_exists():
+                    self._metricas_running = False
+
+        threading.Thread(target=_trabajo, daemon=True).start()
+
+    def _mostrar_metricas_dashboard(self, metricas: Dict[str, Any]):
+        if self._destroying or not self.winfo_exists():
+            return
         try:
-            metricas = DashboardController.obtener_metricas_hoy()
             ventas_soles = metricas.get("ventas_soles", 0.0) or 0.0
             ventas_dolares = metricas.get("ventas_dolares", 0.0) or 0.0
             facturas = metricas.get("facturas", 0) or 0
@@ -788,7 +866,7 @@ class MainWindow(tk.Tk):
             if hasattr(self, "_canvas_grafico_diario"):
                 self._actualizar_grafico_diario()
         except Exception as e:
-            print(f"[Dashboard] Error al actualizar métricas: {e}")
+            print(f"[Dashboard] Error al pintar métricas: {e}")
 
     def _refrescar_dashboard_completo(self, texto_original: str = "🔄  Actualizar"):
         try:
@@ -1172,7 +1250,7 @@ class MainWindow(tk.Tk):
             except Exception:
                 pass
 
-    def _programar_actualizacion_metricas(self, intervalo_ms: int = 5000):
+    def _programar_actualizacion_metricas(self, intervalo_ms: int = 30000):
         if self._destroying or not self.winfo_exists():
             return
         try:
@@ -1189,7 +1267,7 @@ class MainWindow(tk.Tk):
             self.actualizar_metricas_dashboard()
         except Exception as e:
             print(f"[Dashboard] Error al refrescar métricas: {e}")
-        self._programar_actualizacion_metricas(5000)
+        self._programar_actualizacion_metricas(30000)
 
     def _cancelar_jobs_pendientes(self):
         if self._fecha_job is not None:
