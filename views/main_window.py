@@ -77,6 +77,7 @@ class MainWindow(tk.Tk):
         self._paginas = []
         self._fecha_job = None
         self._destroying = False
+        self._grafico_moneda = "PEN"
 
         self.title("FacturasVentas — Sistema de Facturación")
         self.geometry("1280x820")
@@ -323,13 +324,55 @@ class MainWindow(tk.Tk):
         cabecera = tk.Frame(page, bg=self.COLORS["content_bg"])
         cabecera.pack(fill="x")
 
-        tk.Label(cabecera, text="Panel Principal", bg=self.COLORS["content_bg"],
+        cab_izq = tk.Frame(cabecera, bg=self.COLORS["content_bg"])
+        cab_izq.pack(side="left", fill="y")
+        tk.Label(cab_izq, text="Panel Principal", bg=self.COLORS["content_bg"],
                  fg=self.COLORS["text_primary"],
                  font=("Segoe UI", 18, "bold")).pack(anchor="w")
         subt = f"Bienvenido(a), {self.usuario.get('nombre', 'Usuario')}  —  Hoy es {self._hoy_texto()}"
-        tk.Label(cabecera, text=subt, bg=self.COLORS["content_bg"],
+        tk.Label(cab_izq, text=subt, bg=self.COLORS["content_bg"],
                  fg=self.COLORS["text_secondary"],
                  font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 12))
+
+        cab_der = tk.Frame(cabecera, bg=self.COLORS["content_bg"])
+        cab_der.pack(side="right", fill="y")
+
+        btn_refresh_wrap = tk.Frame(cab_der, bg=self.COLORS["content_bg"])
+        btn_refresh_wrap.pack(anchor="e", pady=(4, 0))
+
+        self._btn_refresh = tk.Label(btn_refresh_wrap, text="🔄  Actualizar",
+                                     bg="#2563eb", fg="#ffffff",
+                                     font=("Segoe UI", 9, "bold"),
+                                     padx=16, pady=7, cursor="hand2",
+                                     relief="flat", bd=0)
+        self._btn_refresh.pack()
+        self._refrescando = False
+
+        def _entrar_refresh(e):
+            if not self._refrescando:
+                self._btn_refresh.configure(bg="#1d4ed8")
+
+        def _salir_refresh(e):
+            if not self._refrescando:
+                self._btn_refresh.configure(bg="#2563eb")
+
+        def _click_refresh(e):
+            if self._refrescando:
+                return
+            self._refrescando = True
+            texto_antes = self._btn_refresh.cget("text")
+            self._btn_refresh.configure(text="⏳  Actualizando...", bg="#64748b")
+            self.update_idletasks()
+
+            def _trabajo():
+                self.after(0, lambda: self._refrescar_dashboard_completo(texto_antes))
+
+            import threading as _th
+            _th.Thread(target=_trabajo, daemon=True).start()
+
+        self._btn_refresh.bind("<Enter>", _entrar_refresh)
+        self._btn_refresh.bind("<Leave>", _salir_refresh)
+        self._btn_refresh.bind("<Button-1>", _click_refresh)
 
         tarjetas_row = tk.Frame(page, bg=self.COLORS["content_bg"])
         tarjetas_row.pack(fill="x")
@@ -442,7 +485,259 @@ class MainWindow(tk.Tk):
             b.bind("<Enter>", lambda e, w=b: w.configure(bg="#eef2ff"))
             b.bind("<Leave>", lambda e, w=b: w.configure(bg="#f8fafc"))
 
+        fila3 = tk.Frame(page, bg=self.COLORS["content_bg"])
+        fila3.pack(fill="both", expand=False, pady=(12, 0))
+
+        chart_card = self._crear_card(fila3)
+        chart_card.pack(fill="both", expand=True)
+        chart_inner = chart_card._inner
+        chart_pad = tk.Frame(chart_inner, bg=self.COLORS["card_bg"])
+        chart_pad.pack(fill="both", expand=True, padx=18, pady=16)
+
+        chart_header = tk.Frame(chart_pad, bg=self.COLORS["card_bg"])
+        chart_header.pack(fill="x")
+
+        title_col = tk.Frame(chart_header, bg=self.COLORS["card_bg"])
+        title_col.pack(side="left", fill="y")
+        tk.Label(title_col, text="Prima Neta y Comisiones del Día",
+                 bg=self.COLORS["card_bg"], fg=self.COLORS["text_primary"],
+                 font=("Segoe UI", 15, "bold")).pack(anchor="w")
+        tk.Label(title_col, text="Distribución por horas del día actual",
+                 bg=self.COLORS["card_bg"], fg=self.COLORS["text_secondary"],
+                 font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
+
+        right_col = tk.Frame(chart_header, bg=self.COLORS["card_bg"])
+        right_col.pack(side="right", fill="y")
+
+        badges_row = tk.Frame(right_col, bg=self.COLORS["card_bg"])
+        badges_row.pack(anchor="e")
+
+        def _crear_badge(parent, texto_leyenda: str, color_ico: str, valor_inicial: str):
+            wrap = tk.Frame(parent, bg=self.COLORS["card_bg"],
+                            highlightbackground="#e2e8f0", highlightthickness=1,
+                            bd=0)
+            wrap.pack(side="left", padx=(0, 8))
+            inner = tk.Frame(wrap, bg="#ffffff")
+            inner.pack(fill="both", expand=True, padx=10, pady=6)
+            ico_dot = tk.Label(inner, text="●", bg="#ffffff", fg=color_ico,
+                               font=("Segoe UI", 8))
+            ico_dot.pack(side="left", padx=(0, 6))
+            lbl_ley = tk.Label(inner, text=texto_leyenda, bg="#ffffff",
+                               fg=self.COLORS["text_secondary"],
+                               font=("Segoe UI", 9))
+            lbl_ley.pack(side="left")
+            lbl_val = tk.Label(inner, text=valor_inicial, bg="#ffffff",
+                               fg=self.COLORS["text_primary"],
+                               font=("Segoe UI", 9, "bold"))
+            lbl_val.pack(side="left", padx=(4, 0))
+            return lbl_val
+
+        self._badge_prima_neta = _crear_badge(badges_row, "Prima Neta:", "#2563eb", "S/ 0.00")
+        self._badge_prima_cigv = _crear_badge(badges_row, "Prima Comercial c/IGV:", "#10b981", "S/ 0.00")
+        self._badge_comision = _crear_badge(badges_row, "Comisión:", "#8b5cf6", "S/ 0.00")
+
+        moneda_row = tk.Frame(right_col, bg=self.COLORS["card_bg"])
+        moneda_row.pack(anchor="e", pady=(10, 0))
+
+        moneda_wrap = tk.Frame(moneda_row, bg="#f1f5f9",
+                               highlightbackground="#e2e8f0", highlightthickness=1)
+        moneda_wrap.pack(anchor="e")
+
+        def _crear_btn_moneda(parent, texto: str, moneda: str, activo_inicial: bool):
+            if activo_inicial:
+                bg_btn = "#2563eb"
+                fg_btn = "#ffffff"
+                relief_btn = "flat"
+            else:
+                bg_btn = "#f1f5f9"
+                fg_btn = "#64748b"
+                relief_btn = "flat"
+            btn = tk.Label(parent, text=texto, bg=bg_btn, fg=fg_btn,
+                           font=("Segoe UI", 9, "bold"), padx=16, pady=6,
+                           cursor="hand2", relief=relief_btn, bd=0)
+            btn.pack(side="left")
+            btn._moneda = moneda
+            return btn
+
+        self._btn_moneda_pen = _crear_btn_moneda(moneda_wrap, "S/.", "PEN", True)
+        self._btn_moneda_usd = _crear_btn_moneda(moneda_wrap, "US$", "USD", False)
+
+        def _toggle_pen(e):
+            self._cambiar_moneda_grafico("PEN")
+
+        def _toggle_usd(e):
+            self._cambiar_moneda_grafico("USD")
+
+        self._btn_moneda_pen.bind("<Button-1>", _toggle_pen)
+        self._btn_moneda_usd.bind("<Button-1>", _toggle_usd)
+
+        chart_sep = tk.Frame(chart_pad, bg="#e2e8f0", height=1)
+        chart_sep.pack(fill="x", pady=(14, 0))
+
+        chart_canvas_wrap = tk.Frame(chart_pad, bg=self.COLORS["card_bg"])
+        chart_canvas_wrap.pack(fill="both", expand=True, pady=(10, 0))
+
+        self._canvas_grafico_diario = tk.Canvas(chart_canvas_wrap,
+                                                bg=self.COLORS["card_bg"],
+                                                highlightthickness=0, bd=0,
+                                                height=320)
+        self._canvas_grafico_diario.pack(fill="both", expand=True)
+        self._canvas_grafico_diario.bind("<Configure>",
+                                         lambda e: self._actualizar_grafico_diario())
+
         return page
+
+    def _cambiar_moneda_grafico(self, moneda: str):
+        self._grafico_moneda = moneda
+        pen_activo = moneda == "PEN"
+        usd_activo = moneda == "USD"
+        self._btn_moneda_pen.configure(bg="#2563eb" if pen_activo else "#f1f5f9",
+                                       fg="#ffffff" if pen_activo else "#64748b")
+        self._btn_moneda_usd.configure(bg="#2563eb" if usd_activo else "#f1f5f9",
+                                       fg="#ffffff" if usd_activo else "#64748b")
+        self._actualizar_grafico_diario()
+
+    def _formatear_escala_y(self, valor: float) -> str:
+        if valor >= 1_000_000:
+            return f"{valor / 1_000_000:.1f}M"
+        if valor >= 1_000:
+            return f"{valor / 1_000:.0f}k"
+        return f"{valor:.0f}"
+
+    def _dibujar_grafico_diario_canvas(self, datos: dict):
+        canvas = self._canvas_grafico_diario
+        canvas.delete("all")
+
+        w = max(canvas.winfo_width(), 600)
+        h = max(canvas.winfo_height(), 320)
+
+        pad_izq = 56
+        pad_der = 20
+        pad_sup = 20
+        pad_inf = 50
+        plot_w = w - pad_izq - pad_der
+        plot_h = h - pad_sup - pad_inf
+
+        if plot_w <= 0 or plot_h <= 0:
+            return
+
+        simbolo = datos.get("simbolo", "S/")
+        por_hora = datos.get("por_hora", [])
+        if not por_hora:
+            return
+
+        max_vals = []
+        for f in por_hora:
+            max_vals.append(f.get("prima_neta", 0) or 0)
+            max_vals.append(f.get("prima_comercial_igv", 0) or 0)
+            max_vals.append(f.get("comision", 0) or 0)
+        max_raw = max(max_vals) if max_vals else 0
+
+        if max_raw <= 0:
+            max_y = 500
+        else:
+            if max_raw < 1000:
+                paso = 100
+            elif max_raw < 10000:
+                paso = 1000
+            elif max_raw < 100000:
+                paso = 10000
+            elif max_raw < 1_000_000:
+                paso = 100000
+            else:
+                paso = 1_000_000
+            mult = 1
+            while mult * paso < max_raw * 1.1:
+                mult += 1
+            max_y = mult * paso
+
+        canvas.create_rectangle(0, 0, w, h, fill=self.COLORS["card_bg"], outline="")
+
+        n_pasos = 5
+        for i in range(n_pasos + 1):
+            y = pad_sup + plot_h - (i / n_pasos) * plot_h
+            val = (i / n_pasos) * max_y
+            label = self._formatear_escala_y(val)
+            canvas.create_line(pad_izq, y, pad_izq + plot_w, y,
+                               fill="#e2e8f0", dash=(4, 2))
+            canvas.create_text(pad_izq - 8, y, text=label,
+                               fill="#94a3b8", font=("Segoe UI", 8),
+                               anchor="e")
+
+        n_horas = len(por_hora)
+        ancho_grupo = plot_w / n_horas
+        gap_grupo = ancho_grupo * 0.22
+        ancho_barra = (ancho_grupo - gap_grupo) / 2.0
+
+        color_prima = "#2563eb"
+        color_comision = "#8b5cf6"
+
+        for idx, f in enumerate(por_hora):
+            x_grupo = pad_izq + idx * ancho_grupo + gap_grupo / 2
+            x_azul = x_grupo
+            x_morado = x_grupo + ancho_barra
+
+            pn = f.get("prima_neta", 0) or 0
+            co = f.get("comision", 0) or 0
+
+            h_pn = (pn / max_y) * plot_h if max_y > 0 else 0
+            h_co = (co / max_y) * plot_h if max_y > 0 else 0
+
+            if h_pn > 0:
+                y0_pn = pad_sup + plot_h - h_pn
+                y1_pn = pad_sup + plot_h
+                canvas.create_rectangle(x_azul, y0_pn, x_azul + ancho_barra, y1_pn,
+                                        fill=color_prima, outline="")
+
+            if h_co > 0:
+                y0_co = pad_sup + plot_h - h_co
+                y1_co = pad_sup + plot_h
+                canvas.create_rectangle(x_morado, y0_co, x_morado + ancho_barra, y1_co,
+                                        fill=color_comision, outline="")
+
+        step_etiqueta = 1
+        if n_horas > 16:
+            step_etiqueta = 2
+        if n_horas > 20:
+            step_etiqueta = 3
+
+        for idx in range(0, n_horas, step_etiqueta):
+            f = por_hora[idx]
+            h_ = f.get("hora", 0)
+            x_centro = pad_izq + idx * ancho_grupo + ancho_grupo / 2
+            y_lbl = pad_sup + plot_h + 14
+            canvas.create_text(x_centro, y_lbl,
+                               text=f"{h_:02d}:00",
+                               fill="#64748b", font=("Segoe UI", 8),
+                               anchor="n")
+
+        axis_y_x0 = pad_izq
+        axis_y_y0 = pad_sup
+        axis_y_x1 = pad_izq
+        axis_y_y1 = pad_sup + plot_h
+        canvas.create_line(axis_y_x0, axis_y_y0, axis_y_x1, axis_y_y1,
+                           fill="#cbd5e1")
+        canvas.create_line(pad_izq, pad_sup + plot_h, pad_izq + plot_w, pad_sup + plot_h,
+                           fill="#cbd5e1")
+
+    def _actualizar_grafico_diario(self):
+        try:
+            datos = DashboardController.obtener_datos_grafico_diario(self._grafico_moneda)
+            simbolo = datos.get("simbolo", "S/")
+            totales = datos.get("totales", {})
+            pn = totales.get("prima_neta", 0) or 0
+            pcigv = totales.get("prima_comercial_igv", 0) or 0
+            co = totales.get("comision", 0) or 0
+            if hasattr(self, "_badge_prima_neta"):
+                self._badge_prima_neta.configure(text=f"{simbolo} {pn:,.2f}")
+            if hasattr(self, "_badge_prima_cigv"):
+                self._badge_prima_cigv.configure(text=f"{simbolo} {pcigv:,.2f}")
+            if hasattr(self, "_badge_comision"):
+                self._badge_comision.configure(text=f"{simbolo} {co:,.2f}")
+            if hasattr(self, "_canvas_grafico_diario"):
+                self.after(10, lambda: self._dibujar_grafico_diario_canvas(datos))
+        except Exception as e:
+            print(f"[Dashboard] Error al actualizar gráfico diario: {e}")
 
     def _crear_pagina_generica(self, parent: tk.Widget, nombre: str) -> tk.Frame:
         page = tk.Frame(parent, bg=self.COLORS["content_bg"])
@@ -520,8 +815,26 @@ class MainWindow(tk.Tk):
                 self.lbl_polizas.configure(text=str(polizas))
             if hasattr(self, "lbl_clientes"):
                 self.lbl_clientes.configure(text=str(clientes))
+
+            if hasattr(self, "_canvas_grafico_diario"):
+                self._actualizar_grafico_diario()
         except Exception as e:
             print(f"[Dashboard] Error al actualizar métricas: {e}")
+
+    def _refrescar_dashboard_completo(self, texto_original: str = "🔄  Actualizar"):
+        try:
+            self.actualizar_metricas_dashboard()
+            if hasattr(self, "_btn_refresh"):
+                self._btn_refresh.configure(text="✅  Listo", bg="#059669")
+                self.after(1200, lambda: self._restaurar_btn_refresh(texto_original))
+        except Exception as e:
+            print(f"[Dashboard] Error en refresco completo: {e}")
+            self._restaurar_btn_refresh(texto_original)
+
+    def _restaurar_btn_refresh(self, texto_original: str):
+        self._refrescando = False
+        if hasattr(self, "_btn_refresh"):
+            self._btn_refresh.configure(text=texto_original, bg="#2563eb")
 
     def _buscar_actualizaciones(self):
         dlg = self._mostrar_dialogo_espera()
