@@ -76,6 +76,7 @@ class MainWindow(tk.Tk):
         self._botones_menu = []
         self._paginas = []
         self._fecha_job = None
+        self._metricas_job = None
         self._destroying = False
         self._grafico_moneda = "PEN"
 
@@ -90,6 +91,7 @@ class MainWindow(tk.Tk):
         self._actualizar_fecha()
         self._cambiar_pagina(0)
         self.actualizar_metricas_dashboard()
+        self._programar_actualizacion_metricas(5000)
 
     def _maximizar_ventana(self):
         try:
@@ -327,52 +329,19 @@ class MainWindow(tk.Tk):
         cab_izq = tk.Frame(cabecera, bg=self.COLORS["content_bg"])
         cab_izq.pack(side="left", fill="y")
         tk.Label(cab_izq, text="Panel Principal", bg=self.COLORS["content_bg"],
-                 fg=self.COLORS["text_primary"],
-                 font=("Segoe UI", 18, "bold")).pack(anchor="w")
+            fg=self.COLORS["text_primary"],
+        font=("Segoe UI", 18, "bold")).pack(anchor="w")
         subt = f"Bienvenido(a), {self.usuario.get('nombre', 'Usuario')}  —  Hoy es {self._hoy_texto()}"
         tk.Label(cab_izq, text=subt, bg=self.COLORS["content_bg"],
+            fg=self.COLORS["text_secondary"],
+            font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 12))
+        tk.Label(cabecera, text="Panel Principal", bg=self.COLORS["content_bg"],
+            fg=self.COLORS["text_primary"],
+            font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        subt = f"Bienvenido(a), {self.usuario.get('nombre', 'Usuario')}  —  Hoy es {self._hoy_texto()}"
+        tk.Label(cabecera, text=subt, bg=self.COLORS["content_bg"],
                  fg=self.COLORS["text_secondary"],
                  font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 12))
-
-        cab_der = tk.Frame(cabecera, bg=self.COLORS["content_bg"])
-        cab_der.pack(side="right", fill="y")
-
-        btn_refresh_wrap = tk.Frame(cab_der, bg=self.COLORS["content_bg"])
-        btn_refresh_wrap.pack(anchor="e", pady=(4, 0))
-
-        self._btn_refresh = tk.Label(btn_refresh_wrap, text="🔄  Actualizar",
-                                     bg="#2563eb", fg="#ffffff",
-                                     font=("Segoe UI", 9, "bold"),
-                                     padx=16, pady=7, cursor="hand2",
-                                     relief="flat", bd=0)
-        self._btn_refresh.pack()
-        self._refrescando = False
-
-        def _entrar_refresh(e):
-            if not self._refrescando:
-                self._btn_refresh.configure(bg="#1d4ed8")
-
-        def _salir_refresh(e):
-            if not self._refrescando:
-                self._btn_refresh.configure(bg="#2563eb")
-
-        def _click_refresh(e):
-            if self._refrescando:
-                return
-            self._refrescando = True
-            texto_antes = self._btn_refresh.cget("text")
-            self._btn_refresh.configure(text="⏳  Actualizando...", bg="#64748b")
-            self.update_idletasks()
-
-            def _trabajo():
-                self.after(0, lambda: self._refrescar_dashboard_completo(texto_antes))
-
-            import threading as _th
-            _th.Thread(target=_trabajo, daemon=True).start()
-
-        self._btn_refresh.bind("<Enter>", _entrar_refresh)
-        self._btn_refresh.bind("<Leave>", _salir_refresh)
-        self._btn_refresh.bind("<Button-1>", _click_refresh)
 
         tarjetas_row = tk.Frame(page, bg=self.COLORS["content_bg"])
         tarjetas_row.pack(fill="x")
@@ -1203,6 +1172,25 @@ class MainWindow(tk.Tk):
             except Exception:
                 pass
 
+    def _programar_actualizacion_metricas(self, intervalo_ms: int = 5000):
+        if self._destroying or not self.winfo_exists():
+            return
+        try:
+            if self._metricas_job is not None:
+                self.after_cancel(self._metricas_job)
+        except Exception:
+            pass
+        self._metricas_job = self.after(intervalo_ms, self._refrescar_metricas_periodico)
+
+    def _refrescar_metricas_periodico(self):
+        if self._destroying or not self.winfo_exists():
+            return
+        try:
+            self.actualizar_metricas_dashboard()
+        except Exception as e:
+            print(f"[Dashboard] Error al refrescar métricas: {e}")
+        self._programar_actualizacion_metricas(5000)
+
     def _cancelar_jobs_pendientes(self):
         if self._fecha_job is not None:
             try:
@@ -1210,6 +1198,12 @@ class MainWindow(tk.Tk):
             except Exception:
                 pass
             self._fecha_job = None
+        if self._metricas_job is not None:
+            try:
+                self.after_cancel(self._metricas_job)
+            except Exception:
+                pass
+            self._metricas_job = None
 
     def _confirmar_logout(self):
         resp = messagebox.askyesno(
