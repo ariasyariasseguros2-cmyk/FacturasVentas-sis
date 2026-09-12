@@ -3,7 +3,7 @@ DB_CONFIG = {
     "port": 3306,
     "database": "sis_arias",
     "user": "arias",
-    "password": "TuPassword123!",
+    "password": "TU_PASSWORD_REAL",
     "password_encrypted_b64": "ariasyArias@$%$",
 }
 
@@ -11,7 +11,7 @@ FERNET_PASSPHRASE = "MiPassphraseSegura$$2025"
 
 EMERGENCY_USER = {
     "username": "admin",
-    "password": "admin123",
+    "password": "TU_EMERGENCY_PASSWORD",
     "nombre": "Administrador Emergencia",
     "id_rol": 1,
     "rol_nombre": "BROKER",

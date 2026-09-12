@@ -1,5 +1,10 @@
-import mysql.connector
-from mysql.connector import Error
+try:
+    import mysql.connector
+    from mysql.connector import Error
+except Exception:
+    mysql = None
+    Error = Exception
+
 from typing import Optional, List, Dict, Any, Tuple
 
 from bd import DB_CONFIG
@@ -7,10 +12,13 @@ from bd import DB_CONFIG
 
 class ConexionBD:
     def __init__(self):
-        self.conexion: Optional[mysql.connector.MySQLConnection] = None
+        self.conexion: Optional[Any] = None
         self.config = DB_CONFIG
 
     def conectar(self) -> bool:
+        if mysql is None:
+            self.conexion = None
+            return False
         try:
             self.conexion = mysql.connector.connect(
                 host=self.config["host"],
@@ -22,7 +30,7 @@ class ConexionBD:
                 connection_timeout=10,
             )
             return self.conexion.is_connected()
-        except Error:
+        except (Error, RuntimeError, Exception):
             self.conexion = None
             return False
 
@@ -58,7 +66,11 @@ class ConexionBD:
                 resultado = cursor.fetchall()
             cursor.close()
             return resultado
-        except Error:
+        except (Error, RuntimeError, Exception):
+            try:
+                self.desconectar()
+            except Exception:
+                pass
             return None
 
     def ejecutar_operacion(
@@ -76,5 +88,13 @@ class ConexionBD:
             last_id = cursor.lastrowid
             cursor.close()
             return True, last_id, None
-        except Error as e:
+        except (Error, RuntimeError, Exception) as e:
+            try:
+                self.conexion.rollback()
+            except Exception:
+                pass
+            try:
+                self.desconectar()
+            except Exception:
+                pass
             return False, None, str(e)
