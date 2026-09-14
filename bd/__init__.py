@@ -3,8 +3,8 @@ DB_CONFIG = {
     "port": 3306,
     "database": "sis_arias",
     "user": "arias",
-    "password": "TU_PASSWORD_REAL",
-    "password_encrypted_b64": "ariasyArias@$%$",
+    "password": "TuPassword123!",
+    "connection_timeout": 10,
 }
 
 FERNET_PASSPHRASE = "MiPassphraseSegura$$2025"
