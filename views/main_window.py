@@ -14,16 +14,6 @@ from views.bill_grandias import TableroFacturacionGrandias
 from views.bill_positiva import TableroFacturacionPositiva
 from views.bill_mapfre import TableroFacturacionMapfre
 
-from utils.updater import (
-    APP_VERSION,
-    consultar_version_remota,
-    abrir_descarga,
-    descargar_archivo,
-    aplicar_parche_y_cerrar,
-    ejecutar_actualizador_y_salir,
-    obtener_directorio_ejecutable,
-)
-
 
 class MainWindow(tk.Tk):
     COLORS = {
@@ -167,18 +157,6 @@ class MainWindow(tk.Tk):
         tk.Label(info_box, text=self.usuario.get("rol_nombre", "Usuario"),
                  bg=self.COLORS["header_bg"], fg="#94a3b8",
                  font=("Segoe UI", 8)).pack(anchor="w")
-
-        btn_update = tk.Button(header, text="🔄 Actualizaciones", bg="#1e3a8a", fg="#ffffff",
-                               font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
-                               cursor="hand2", activebackground="#1e40af",
-                               activeforeground="#ffffff", padx=12, pady=6,
-                               command=self._buscar_actualizaciones)
-        btn_update.pack(side="right", padx=(0, 6), pady=12)
-
-        version_tag = tk.Label(header, text=f"v{APP_VERSION}", bg="#1e293b",
-                               fg="#94a3b8", font=("Segoe UI", 8, "bold"),
-                               padx=8, pady=3)
-        version_tag.pack(side="right", padx=(0, 0), pady=15)
 
         btn_logout = tk.Button(header, text="Cerrar Sesión", bg="#1e293b", fg="#f8fafc",
                                font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
@@ -888,8 +866,7 @@ class MainWindow(tk.Tk):
         self.update_idletasks()
 
         def _trabajo():
-            res = consultar_version_remota()
-            self.after(0, lambda: self._finalizar_busqueda(dlg, res))
+            self.after(0, lambda: self._finalizar_busqueda(dlg))
 
         threading.Thread(target=_trabajo, daemon=True).start()
 
