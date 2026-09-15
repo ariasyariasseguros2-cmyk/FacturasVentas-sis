@@ -22,7 +22,7 @@ from typing import Optional, Dict, Any, Tuple, Callable
 APP_VERSION: str = "1.0.0"
 
 VERSION_URL: str = (
-    "https://aasnet.tech/updates/version.json"
+    "https://www.aasnet.tech/updates/version.json"
 )
 
 APP_EXE_NAME: str = "main.exe"
@@ -1396,54 +1396,41 @@ def _generar_script_actualizacion(
     dir_extraccion: str,
     ruta_app_nueva: str,
 ) -> str:
+    """
+    Genera el BAT externo encargado de reemplazar la aplicación.
+
+    El BAT se ejecuta después de que el proceso principal
+    haya terminado.
+    """
 
     log("=" * 70)
     log("GENERANDO SCRIPT BAT")
 
-    dir_app = os.path.dirname(
-        ruta_app_vieja
-    )
+    ruta_app_vieja = os.path.abspath(ruta_app_vieja)
+    dir_extraccion = os.path.abspath(dir_extraccion)
+    ruta_app_nueva = os.path.abspath(ruta_app_nueva)
 
-    nombre_bat = (
-        "_update_helper.bat"
-    )
+    dir_app = os.path.dirname(ruta_app_vieja)
+    nombre_bat = "_update_helper.bat"
+    ruta_bat = os.path.join(dir_app, nombre_bat)
 
-    ruta_bat = os.path.join(
-        dir_app,
-        nombre_bat
-    )
+    nombre_exe = os.path.basename(ruta_app_vieja)
 
-    nombre_exe = os.path.basename(
-        ruta_app_vieja
-    )
-
-    log(
-        f"DIR APP: {dir_app}"
-    )
-
-    log(
-        f"DIR PATCH: {dir_extraccion}"
-    )
-
-    log(
-        f"EXE VIEJO: {ruta_app_vieja}"
-    )
-
-    log(
-        f"EXE NUEVO: {ruta_app_nueva}"
-    )
+    log(f"DIR APP: {dir_app}")
+    log(f"DIR PATCH: {dir_extraccion}")
+    log(f"EXE VIEJO: {ruta_app_vieja}")
+    log(f"EXE NUEVO: {ruta_app_nueva}")
+    log(f"BAT: {ruta_bat}")
 
     contenido = f"""@echo off
 setlocal EnableExtensions DisableDelayedExpansion
 
-chcp 65001 >nul
-
 title FacturasVentas - Actualizando
 
 echo.
-echo ============================================
-echo       FacturasVentas - ACTUALIZACION
-echo ============================================
+echo ============================================================
+echo          FACTURASVENTAS - ACTUALIZACION
+echo ============================================================
 echo.
 
 set "DIR_APP={dir_app}"
@@ -1452,34 +1439,55 @@ set "EXE_OLD={ruta_app_vieja}"
 set "EXE_NEW={ruta_app_nueva}"
 set "RELAUNCH={os.path.join(dir_app, nombre_exe)}"
 set "SELF={ruta_bat}"
+set "EXE_NAME={nombre_exe}"
 
-echo [1/7] Esperando cierre de la aplicacion...
-ping -n 3 127.0.0.1 >nul
+echo [1/8] Esperando unos segundos...
+timeout /t 2 /nobreak >nul
 
 echo.
-echo [2/7] Verificando parche...
+echo [2/8] Verificando archivos del parche...
+echo.
 
 if not exist "%DIR_PATCH%" (
-    echo [ERROR] Carpeta del parche no encontrada:
+    echo [ERROR] La carpeta del parche NO existe:
     echo %DIR_PATCH%
     goto error
 )
 
 if not exist "%EXE_NEW%" (
-    echo [ERROR] No se encontro el nuevo ejecutable:
+    echo [ERROR] El nuevo ejecutable NO existe:
     echo %EXE_NEW%
     goto error
 )
 
 echo.
-echo [3/7] Cerrando aplicacion anterior...
+echo Parche encontrado correctamente.
+echo.
 
-taskkill /F /IM "{nombre_exe}" >nul 2>&1
+echo [3/8] Cerrando aplicacion anterior...
+echo.
 
-ping -n 3 127.0.0.1 >nul
+taskkill /F /IM "%EXE_NAME%" >nul 2>&1
+
+echo Esperando que termine completamente el proceso...
+echo.
+
+:WAIT_PROCESS
+
+tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>NUL | find /I "%EXE_NAME%" >NUL
+
+if not errorlevel 1 (
+    echo La aplicacion todavia esta ejecutandose...
+    timeout /t 1 /nobreak >nul
+    goto WAIT_PROCESS
+)
 
 echo.
-echo [4/7] Preparando archivos...
+echo Aplicacion cerrada correctamente.
+echo.
+
+echo [4/8] Preparando carpeta de respaldo...
+echo.
 
 if exist "%DIR_APP%\\_old_version" (
     rmdir /S /Q "%DIR_APP%\\_old_version" >nul 2>&1
@@ -1488,47 +1496,67 @@ if exist "%DIR_APP%\\_old_version" (
 mkdir "%DIR_APP%\\_old_version" >nul 2>&1
 
 echo.
-echo [5/7] Copiando archivos nuevos...
+echo [5/8] Copiando archivos nuevos...
+echo.
 
 xcopy "%DIR_PATCH%\\*.*" "%DIR_APP%\\" /E /H /C /I /Y
 
 if errorlevel 1 (
     echo.
-    echo [ERROR] Error copiando archivos.
+    echo ============================================================
+    echo [ERROR] ERROR COPIANDO LOS ARCHIVOS
+    echo ============================================================
+    echo.
     goto error
 )
 
 echo.
-echo [6/7] Verificando ejecutable...
+echo Archivos copiados correctamente.
+echo.
+
+echo [6/8] Verificando nueva aplicacion...
+echo.
 
 if not exist "%RELAUNCH%" (
-    echo [ERROR] El nuevo ejecutable no existe:
+    echo [ERROR] No se encontro:
     echo %RELAUNCH%
     goto error
 )
 
 echo.
-echo [7/7] Actualizacion completada correctamente.
-
+echo Ejecutable nuevo encontrado.
 echo.
-echo ============================================
+
+echo [7/8] Actualizacion completada.
+echo.
+
+echo ============================================================
 echo          ACTUALIZACION EXITOSA
-echo ============================================
+echo ============================================================
 echo.
-
-ping -n 2 127.0.0.1 >nul
 
 echo Iniciando nueva version...
 
+timeout /t 2 /nobreak >nul
+
 start "" "%RELAUNCH%" --post-update
 
-ping -n 3 127.0.0.1 >nul
+echo.
+echo Nueva version iniciada.
+echo.
 
-echo Limpiando archivos temporales...
+timeout /t 3 /nobreak >nul
+
+echo [8/8] Limpiando archivos temporales...
+echo.
 
 if exist "%DIR_PATCH%" (
     rmdir /S /Q "%DIR_PATCH%" >nul 2>&1
 )
+
+echo.
+echo Eliminando actualizador temporal...
+echo.
 
 del /F /Q "%SELF%" >nul 2>&1
 
@@ -1538,61 +1566,52 @@ exit /b 0
 :error
 
 echo.
-echo ============================================
-echo   ERROR: NO SE PUDO COMPLETAR ACTUALIZACION
-echo ============================================
+echo ============================================================
+echo              ACTUALIZACION FALLIDA
+echo ============================================================
 echo.
-
-echo Carpeta:
+echo El actualizador NO se eliminara para poder revisar el error.
+echo.
+echo Carpeta APP:
+echo %DIR_APP%
+echo.
+echo Carpeta PATCH:
 echo %DIR_PATCH%
-
 echo.
-
-echo Ejecutable:
-echo %RELAUNCH%
-
+echo Ejecutable nuevo:
+echo %EXE_NEW%
 echo.
-
-echo El programa NO ha sido actualizado.
-
 echo.
-pause
+echo Presiona una tecla para cerrar esta ventana...
+pause >nul
 
 exit /b 1
 """
 
     try:
-
         with open(
             ruta_bat,
             "w",
             encoding="utf-8",
             errors="replace"
         ) as f:
-
-            f.write(
-                contenido
-            )
+            f.write(contenido)
 
     except Exception:
-
         with open(
             ruta_bat,
             "w",
             encoding="cp1252",
             errors="replace"
         ) as f:
+            f.write(contenido)
 
-            f.write(
-                contenido
-            )
-
-    log(
-        f"BAT CREADO: {ruta_bat}"
-    )
+    if os.path.exists(ruta_bat):
+        log(f"BAT CREADO CORRECTAMENTE: {ruta_bat}")
+    else:
+        log(f"ERROR: NO SE PUDO CREAR BAT: {ruta_bat}")
 
     return ruta_bat
-
 
 # ============================================================
 # APLICAR PARCHE
@@ -1940,93 +1959,58 @@ def aplicar_parche_y_cerrar(
 def ejecutar_actualizador_y_salir(
     ruta_bat: str
 ) -> bool:
+    """
+    Ejecuta el actualizador externo.
+
+    IMPORTANTE:
+    Esta función solamente inicia el BAT.
+    El cierre del proceso principal se realiza después
+    mediante os._exit(0).
+    """
 
     log("=" * 70)
     log("EJECUTANDO ACTUALIZADOR")
 
     try:
+        ruta_bat_abs = os.path.abspath(ruta_bat)
 
-        ruta_bat_abs = os.path.abspath(
-            ruta_bat
-        )
+        log(f"BAT: {ruta_bat_abs}")
 
-        log(
-            f"BAT: {ruta_bat_abs}"
-        )
-
-        if not os.path.exists(
-            ruta_bat_abs
-        ):
-
-            log(
-                "ERROR: BAT no existe"
-            )
-
+        if not os.path.exists(ruta_bat_abs):
+            log("ERROR: BAT no existe")
             return False
 
-        if os.name == "nt":
+        if os.name != "nt":
+            log("ERROR: Esta función requiere Windows")
+            return False
 
-            creation_flags = (
-                0x08000000
-            )
+        log("Sistema operativo: Windows")
+        log("Ejecutando cmd.exe...")
+        log("La consola del actualizador será visible durante esta prueba.")
 
-            log(
-                "Sistema operativo: Windows"
-            )
-
-            log(
-                "Ejecutando cmd.exe..."
-            )
-
-            proceso = subprocess.Popen(
-                [
-                    "cmd.exe",
-                    "/C",
-                    ruta_bat_abs
-                ],
-                shell=False,
-                close_fds=True,
-                creationflags=creation_flags,
-                cwd=os.path.dirname(
-                    ruta_bat_abs
-                )
-            )
-
-            log(
-                f"PID actualizador: "
-                f"{proceso.pid}"
-            )
-
-        else:
-
-            proceso = subprocess.Popen(
-                [
-                    "bash",
-                    ruta_bat_abs
-                ]
-            )
-
-            log(
-                f"PID actualizador: "
-                f"{proceso.pid}"
-            )
-
-        log(
-            "Actualizador iniciado correctamente."
+        # NO usamos CREATE_NO_WINDOW durante las pruebas.
+        # De esta manera podremos ver los errores del BAT.
+        proceso = subprocess.Popen(
+            [
+                "cmd.exe",
+                "/C",
+                ruta_bat_abs
+            ],
+            shell=False,
+            cwd=os.path.dirname(ruta_bat_abs)
         )
+
+        log(f"PID actualizador: {proceso.pid}")
+        log("Actualizador iniciado correctamente.")
 
         return True
 
     except Exception as e:
-
         log_error(
             "No se pudo ejecutar actualizador",
             e
         )
-
         return False
-
-
 # ============================================================
 # FUNCIÓN COMPLETA PARA ACTUALIZAR
 # ============================================================
@@ -2061,6 +2045,7 @@ def actualizar_desde_servidor(
         "ok": False,
         "actualizacion_disponible": False,
         "actualizacion_aplicada": False,
+        "actualizador_iniciado": False,
         "version_actual": APP_VERSION,
         "version_nueva": None,
         "error": None,
@@ -2068,23 +2053,20 @@ def actualizar_desde_servidor(
     }
 
     # ========================================================
-    # CONSULTAR VERSION
+    # PASO 1 - CONSULTAR VERSION
     # ========================================================
 
-    log(
-        "PASO 1: Consultando version.json..."
-    )
+    log("")
+    log("=" * 70)
+    log("PASO 1: CONSULTANDO VERSION.JSON")
+    log("=" * 70)
 
     info = consultar_version_remota()
 
     if not info["ok"]:
 
-        resultado[
-            "error"
-        ] = (
-            info.get(
-                "error"
-            )
+        resultado["error"] = (
+            info.get("error")
             or "No se pudo consultar la versión."
         )
 
@@ -2098,49 +2080,53 @@ def actualizar_desde_servidor(
     # NO HAY ACTUALIZACIÓN
     # ========================================================
 
-    if not info[
-        "hay_actualizacion"
-    ]:
+    if not info["hay_actualizacion"]:
 
-        log(
-            "No hay actualización disponible."
-        )
+        log("")
+        log("=" * 70)
+        log("NO HAY ACTUALIZACIÓN DISPONIBLE")
+        log("=" * 70)
 
         resultado["ok"] = True
 
         return resultado
 
-    resultado[
-        "actualizacion_disponible"
-    ] = True
+    # ========================================================
+    # ACTUALIZACIÓN DISPONIBLE
+    # ========================================================
 
-    resultado[
-        "version_nueva"
-    ] = info.get(
+    resultado["actualizacion_disponible"] = True
+
+    resultado["version_nueva"] = info.get(
         "version_remota"
     )
 
+    log("")
+    log("=" * 70)
+    log("ACTUALIZACIÓN DISPONIBLE")
+    log("=" * 70)
+
     log(
-        f"NUEVA VERSION: "
+        f"VERSIÓN ACTUAL: {APP_VERSION}"
+    )
+
+    log(
+        f"NUEVA VERSIÓN: "
         f"{resultado['version_nueva']}"
     )
 
     # ========================================================
-    # VERIFICAR PATCH
+    # PASO 2 - VERIFICAR PATCH
     # ========================================================
 
-    log(
-        "PASO 2: Verificando posibilidad "
-        "de autoaplicación..."
-    )
+    log("")
+    log("=" * 70)
+    log("PASO 2: VERIFICANDO POSIBILIDAD DE AUTOAPLICACIÓN")
+    log("=" * 70)
 
-    if not info[
-        "puede_autoaplicar"
-    ]:
+    if not info["puede_autoaplicar"]:
 
-        resultado[
-            "error"
-        ] = (
+        resultado["error"] = (
             "La actualización está disponible, "
             "pero no puede aplicarse automáticamente."
         )
@@ -2157,9 +2143,7 @@ def actualizar_desde_servidor(
 
     if not patch_url:
 
-        resultado[
-            "error"
-        ] = (
+        resultado["error"] = (
             "version.json no contiene patch_url."
         )
 
@@ -2174,16 +2158,23 @@ def actualizar_desde_servidor(
     )
 
     # ========================================================
-    # CARPETA TEMPORAL
+    # PASO 3 - CARPETA Y ZIP TEMPORAL
     # ========================================================
 
-    dir_app = (
-        obtener_directorio_ejecutable()
-    )
+    log("")
+    log("=" * 70)
+    log("PASO 3: PREPARANDO DESCARGA")
+    log("=" * 70)
+
+    dir_app = obtener_directorio_ejecutable()
 
     ruta_zip = os.path.join(
         dir_app,
         "_update_package.zip"
+    )
+
+    log(
+        f"DIR APP: {dir_app}"
     )
 
     log(
@@ -2194,9 +2185,7 @@ def actualizar_desde_servidor(
     # ELIMINAR ZIP ANTERIOR
     # ========================================================
 
-    if os.path.exists(
-        ruta_zip
-    ):
+    if os.path.exists(ruta_zip):
 
         log(
             "Eliminando ZIP anterior..."
@@ -2208,6 +2197,10 @@ def actualizar_desde_servidor(
                 ruta_zip
             )
 
+            log(
+                "ZIP anterior eliminado."
+            )
+
         except Exception as e:
 
             log_error(
@@ -2215,13 +2208,21 @@ def actualizar_desde_servidor(
                 e
             )
 
+            resultado["error"] = (
+                "No se pudo eliminar el ZIP anterior: "
+                f"{e}"
+            )
+
+            return resultado
+
     # ========================================================
-    # DESCARGAR
+    # PASO 4 - DESCARGAR PATCH
     # ========================================================
 
-    log(
-        "PASO 3: Descargando parche..."
-    )
+    log("")
+    log("=" * 70)
+    log("PASO 4: DESCARGANDO PARCHE")
+    log("=" * 70)
 
     descarga = descargar_archivo(
         patch_url,
@@ -2232,12 +2233,8 @@ def actualizar_desde_servidor(
 
     if not descarga["ok"]:
 
-        resultado[
-            "error"
-        ] = (
-            descarga.get(
-                "error"
-            )
+        resultado["error"] = (
+            descarga.get("error")
             or "No se pudo descargar el parche."
         )
 
@@ -2248,13 +2245,22 @@ def actualizar_desde_servidor(
 
         return resultado
 
-    # ========================================================
-    # VALIDAR TAMAÑO
-    # ========================================================
+    log(
+        "DESCARGA DEL PARCHE COMPLETADA."
+    )
 
     log(
-        "PASO 4: Validando tamaño del ZIP..."
+        f"ZIP: {ruta_zip}"
     )
+
+    # ========================================================
+    # PASO 5 - VALIDAR TAMAÑO
+    # ========================================================
+
+    log("")
+    log("=" * 70)
+    log("PASO 5: VALIDANDO TAMAÑO DEL ZIP")
+    log("=" * 70)
 
     file_size = int(
         info.get(
@@ -2279,9 +2285,7 @@ def actualizar_desde_servidor(
 
         if tamano_real != file_size:
 
-            resultado[
-                "error"
-            ] = (
+            resultado["error"] = (
                 "El tamaño del ZIP descargado "
                 "no coincide con file_size_bytes."
             )
@@ -2291,21 +2295,32 @@ def actualizar_desde_servidor(
             )
 
             try:
+
                 os.remove(
                     ruta_zip
                 )
+
             except Exception:
+
                 pass
 
             return resultado
 
+    else:
+
+        log(
+            "file_size_bytes = 0. "
+            "Se omite validación de tamaño."
+        )
+
     # ========================================================
-    # APLICAR PARCHE
+    # PASO 6 - PREPARAR PARCHE
     # ========================================================
 
-    log(
-        "PASO 5: Preparando parche..."
-    )
+    log("")
+    log("=" * 70)
+    log("PASO 6: PREPARANDO PARCHE")
+    log("=" * 70)
 
     parche = aplicar_parche_y_cerrar(
         ruta_zip,
@@ -2318,12 +2333,8 @@ def actualizar_desde_servidor(
 
     if not parche["ok"]:
 
-        resultado[
-            "error"
-        ] = (
-            parche.get(
-                "error"
-            )
+        resultado["error"] = (
+            parche.get("error")
             or "No se pudo preparar la actualización."
         )
 
@@ -2334,94 +2345,158 @@ def actualizar_desde_servidor(
 
         return resultado
 
-    resultado[
-        "ok"
-    ] = True
+    # ========================================================
+    # BAT GENERADO
+    # ========================================================
 
-    resultado[
-        "actualizacion_aplicada"
-    ] = True
-
-    resultado[
-        "bat_path"
-    ] = parche.get(
+    ruta_bat = parche.get(
         "bat_path"
     )
 
-    log(
-        "ACTUALIZACIÓN PREPARADA CORRECTAMENTE"
-    )
+    if not ruta_bat:
 
-    log(
-        f"BAT: {resultado['bat_path']}"
-    )
-
-    log("=" * 70)
-    log("FIN ACTUALIZACIÓN")
-    log("=" * 70)
-
-    return resultado
-
-
-# ============================================================
-# PRUEBA DIRECTA
-# ============================================================
-
-if __name__ == "__main__":
-
-    print("")
-    print("=" * 70)
-    print(" FACTURASVENTAS - TEST ACTUALIZADOR")
-    print("=" * 70)
-    print("")
-
-    log(
-        "INICIANDO TEST MANUAL"
-    )
-
-    log(
-        f"Python: {sys.version}"
-    )
-
-    log(
-        f"OS: {os.name}"
-    )
-
-    log(
-        f"Frozen: {getattr(sys, 'frozen', False)}"
-    )
-
-    log(
-        f"Executable: {sys.executable}"
-    )
-
-    log(
-        f"Directorio: "
-        f"{obtener_directorio_ejecutable()}"
-    )
-
-    log(
-        f"Log: {obtener_ruta_log()}"
-    )
-
-    resultado = consultar_version_remota()
-
-    print("")
-    print("=" * 70)
-    print(" RESULTADO")
-    print("=" * 70)
-
-    print(
-        json.dumps(
-            resultado,
-            indent=4,
-            ensure_ascii=False
+        resultado["error"] = (
+            "El parche se preparó, "
+            "pero no se obtuvo la ruta del BAT."
         )
+
+        log(
+            resultado["error"]
+        )
+
+        return resultado
+
+    ruta_bat = os.path.abspath(
+        ruta_bat
     )
 
-    print("")
-    print(
-        "Presiona ENTER para cerrar..."
+    resultado["bat_path"] = ruta_bat
+
+    log("")
+    log("=" * 70)
+    log("PARCHE PREPARADO CORRECTAMENTE")
+    log("=" * 70)
+
+    log(
+        f"BAT: {ruta_bat}"
     )
 
-    input()
+    # ========================================================
+    # VERIFICAR QUE EL BAT REALMENTE EXISTE
+    # ========================================================
+
+    if not os.path.exists(ruta_bat):
+
+        resultado["error"] = (
+            "El archivo BAT fue generado "
+            "pero no existe en disco."
+        )
+
+        log(
+            resultado["error"]
+        )
+
+        return resultado
+
+    log(
+        "BAT VERIFICADO: EXISTE"
+    )
+
+    # ========================================================
+    # PASO 7 - EJECUTAR ACTUALIZADOR
+    # ========================================================
+
+    log("")
+    log("=" * 70)
+    log("PASO 7: EJECUTANDO ACTUALIZADOR EXTERNO")
+    log("=" * 70)
+
+    log(
+        f"BAT: {ruta_bat}"
+    )
+
+    actualizado = ejecutar_actualizador_y_salir(
+        ruta_bat
+    )
+
+    if not actualizado:
+
+        resultado["error"] = (
+            "No se pudo iniciar "
+            "el actualizador externo."
+        )
+
+        log(
+            resultado["error"]
+        )
+
+        return resultado
+
+    # ========================================================
+    # EL ACTUALIZADOR YA FUE LANZADO
+    # ========================================================
+
+    resultado["ok"] = True
+
+    resultado["actualizador_iniciado"] = True
+
+    # OJO:
+    # Todavía no podemos decir que la actualización terminó.
+    # El BAT externo es quien realizará el reemplazo.
+
+    resultado["actualizacion_aplicada"] = False
+
+    log("")
+    log("=" * 70)
+    log("ACTUALIZADOR EXTERNO INICIADO CORRECTAMENTE")
+    log("=" * 70)
+
+    log(
+        f"PID DEL ACTUALIZADOR LANZADO."
+    )
+
+    log(
+        f"BAT: {ruta_bat}"
+    )
+
+    log("")
+    log(
+        "El proceso principal se cerrará ahora."
+    )
+
+    log(
+        "El BAT continuará con la actualización."
+    )
+
+    # ========================================================
+    # PEQUEÑA ESPERA
+    # ========================================================
+
+    time.sleep(1)
+
+    # ========================================================
+    # PASO 8 - CERRAR COMPLETAMENTE LA APP
+    # ========================================================
+
+    log("")
+    log("=" * 70)
+    log("PASO 8: FINALIZANDO PROCESO PRINCIPAL")
+    log("=" * 70)
+
+    log(
+        "os._exit(0)"
+    )
+
+    # MUY IMPORTANTE:
+    #
+    # No utilizar sys.exit() aquí.
+    #
+    # El BAT necesita que este proceso haya terminado
+    # para poder reemplazar main.exe.
+    #
+    # os._exit(0) termina inmediatamente el proceso.
+
+    os._exit(0)
+
+    # Nunca debería llegar aquí.
+    return resultado
