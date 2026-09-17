@@ -3,7 +3,7 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, messagebox
-from typing import Callable, Optional, Dict, Any
+from typing import Callable, Optional, Any
 
 from controllers.auth_controller import AuthController
 
@@ -13,672 +13,884 @@ from utils.updater import (
     descargar_archivo,
     aplicar_parche_y_cerrar,
     ejecutar_actualizador_y_salir,
-    obtener_directorio_ejecutable,
+    obtener_directorio_updates,
 )
 
 
 class LoginWindow(tk.Tk):
 
-    COLORS = {
-        "bg": "#f1f5f9",
-        "card": "#ffffff",
-
-        "panel_left_1": "#1e3a8a",
-        "panel_left_2": "#2563eb",
-        "panel_left_3": "#3b82f6",
-
-        "text_primary": "#0f172a",
-        "text_secondary": "#64748b",
-        "text_muted": "#94a3b8",
-        "label": "#334155",
-
-        "input_border": "#cbd5e1",
-        "input_bg": "#ffffff",
-
-        "btn_bg": "#2563eb",
-        "btn_hover": "#1d4ed8",
-        "btn_text": "#ffffff",
-
-        "success": "#16a34a",
-        "warning": "#ea580c",
-        "error": "#dc2626",
-
-        "accent_soft": "#dbeafe",
-    }
-
     def __init__(
         self,
-        auth: AuthController,
-        on_login_success: Callable[[Dict[str, Any]], None]
+        auth: Optional[AuthController] = None,
+        on_login_success: Optional[Callable[[Any], None]] = None,
     ):
         super().__init__()
 
-        self.auth = auth
+        # ====================================================
+        # CONFIGURACIÓN
+        # ====================================================
+
+        self.title("FacturasVentas")
+        self.geometry("460x520")
+        self.resizable(False, False)
+
+        self.protocol(
+            "WM_DELETE_WINDOW",
+            self._cerrar_ventana,
+        )
+
+        # ====================================================
+        # AUTH
+        # ====================================================
+
+        self.auth = auth if auth is not None else AuthController()
+
         self.on_login_success = on_login_success
 
-        self._password_visible = False
-        self._msg_job: Optional[str] = None
+        # ====================================================
+        # ESTADOS
+        # ====================================================
 
-        # ============================================================
-        # CONTROL DE ACTUALIZACIÓN
-        # ============================================================
-
+        self._cerrando = False
         self._actualizacion_verificada = False
         self._actualizacion_en_proceso = False
-        self._login_en_proceso = False
-        self._cerrando = False
+        self._conectando_bd = False
 
-        self._version_remota = None
-        self._patch_url = None
-        self._checksum = None
+        # ====================================================
+        # DATOS ACTUALIZACIÓN
+        # ====================================================
 
-        # ============================================================
-        # VENTANA
-        # ============================================================
+        self.version_remota = None
+        self.patch_url = None
+        self.checksum_sha256 = None
+        self.release_notes = ""
 
-        self.title("FacturasVentas — Iniciar Sesión")
-        self.geometry("960x580")
-        self.minsize(900, 540)
-        self.configure(bg=self.COLORS["bg"])
+        # ====================================================
+        # VARIABLES
+        # ====================================================
 
-        self._center_window(960, 580)
+        self.var_usuario = tk.StringVar()
+        self.var_password = tk.StringVar()
 
-        # ============================================================
-        # UI
-        # ============================================================
-
-        self._construir_ui()
-
-        # ============================================================
-        # BLOQUEAR LOGIN MIENTRAS SE VERIFICA ACTUALIZACIÓN
-        # ============================================================
-
-        self.btn_login.configure(
-            state="disabled",
-            text="VERIFICANDO ACTUALIZACIONES..."
+        self.var_estado = tk.StringVar(
+            value="VERIFICANDO ACTUALIZACIONES..."
         )
 
-        self.lbl_estado.configure(
-            text="●  Verificando versión del sistema...",
-            fg=self.COLORS["btn_bg"]
+        self.var_version = tk.StringVar(
+            value=f"Versión {APP_VERSION}"
         )
 
-        # No verificamos la BD inmediatamente.
-        # Primero se verifica la actualización.
+        # ====================================================
+        # INTERFAZ
+        # ====================================================
+
+        self._crear_interfaz()
+        self._centrar_ventana()
+
+        # ====================================================
+        # VERIFICAR ACTUALIZACIÓN
+        # ====================================================
+
         self.after(
-            100,
-            self._verificar_actualizacion_inicial
+            300,
+            self._iniciar_verificacion_actualizacion,
         )
 
-    # ================================================================
-    # DETECTAR EJECUCIÓN LOCAL VS EXE
-    # ================================================================
+    # ========================================================
+    # CENTRAR
+    # ========================================================
 
-    def _es_exe(self) -> bool:
-        """Devuelve True cuando la aplicación está ejecutándose como EXE."""
-        return bool(getattr(sys, "frozen", False))
-
-    # ================================================================
-    # CENTRAR VENTANA
-    # ================================================================
-
-    def _center_window(self, w: int, h: int) -> None:
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-
-        x = (sw - w) // 2
-        y = (sh - h) // 2
-
-        self.geometry(f"{w}x{h}+{x}+{y}")
-
-    # ================================================================
-    # CONSTRUIR UI
-    # ================================================================
-
-    def _construir_ui(self):
-
-        container = tk.Frame(
-            self,
-            bg=self.COLORS["bg"]
-        )
-
-        container.pack(
-            fill="both",
-            expand=True,
-            padx=30,
-            pady=28
-        )
-
-        card = tk.Frame(
-            container,
-            bg=self.COLORS["card"],
-            highlightthickness=0
-        )
-
-        card.place(
-            relx=0.5,
-            rely=0.5,
-            anchor="center",
-            width=820,
-            height=500
-        )
+    def _centrar_ventana(self):
 
         try:
-            card.update_idletasks()
+
+            self.update_idletasks()
+
+            ancho = 460
+            alto = 520
+
+            pantalla_ancho = self.winfo_screenwidth()
+            pantalla_alto = self.winfo_screenheight()
+
+            x = int((pantalla_ancho - ancho) / 2)
+            y = int((pantalla_alto - alto) / 2)
+
+            self.geometry(
+                f"{ancho}x{alto}+{x}+{y}"
+            )
+
         except Exception:
             pass
 
-        card_inner = tk.Frame(
-            card,
-            bg=self.COLORS["card"]
-        )
+    # ========================================================
+    # INTERFAZ
+    # ========================================================
 
-        card_inner.pack(
+    def _crear_interfaz(self):
+
+        frame = ttk.Frame(self)
+
+        frame.pack(
             fill="both",
-            expand=True
+            expand=True,
+            padx=40,
+            pady=30,
         )
 
-        # ============================================================
-        # PANEL IZQUIERDO
-        # ============================================================
+        # ====================================================
+        # TÍTULO
+        # ====================================================
 
-        panel_izq = tk.Frame(
-            card_inner,
-            bg=self.COLORS["panel_left_2"]
-        )
-
-        panel_izq.place(
-            x=0,
-            y=0,
-            width=340,
-            height=500
-        )
-
-        self._paint_panel_gradient(panel_izq)
-
-        tk.Label(
-            panel_izq,
-            text="",
-            bg=self.COLORS["panel_left_2"],
-            fg="#ffffff",
-            font=("Segoe UI", 36, "bold")
-        ).place(
-            x=32,
-            y=40
-        )
-
-        tk.Label(
-            panel_izq,
+        ttk.Label(
+            frame,
             text="FacturasVentas",
-            bg=self.COLORS["panel_left_2"],
-            fg="#ffffff",
-            font=("Segoe UI", 22, "bold")
-        ).place(
-            x=32,
-            y=108
+            font=("Segoe UI", 24, "bold"),
+        ).pack(
+            pady=(15, 5)
         )
 
-        tk.Label(
-            panel_izq,
-            text="Sistema de gestión de facturas",
-            bg=self.COLORS["panel_left_2"],
-            fg="#dbeafe",
-            font=("Segoe UI", 10)
-        ).place(
-            x=34,
-            y=148
+        ttk.Label(
+            frame,
+            text="Sistema de gestión",
+            font=("Segoe UI", 11),
+        ).pack(
+            pady=(0, 30)
         )
 
-        tk.Label(
-            panel_izq,
-            text="SIS-ARIAS",
-            bg=self.COLORS["panel_left_2"],
-            fg="#ffffff",
-            font=("Segoe UI", 13, "bold")
-        ).place(
-            x=34,
-            y=190
-        )
-
-        tk.Label(
-            panel_izq,
-            text="Acceso seguro al sistema",
-            bg=self.COLORS["panel_left_2"],
-            fg="#dbeafe",
-            font=("Segoe UI", 9)
-        ).place(
-            x=34,
-            y=220
-        )
-
-        # ============================================================
-        # PANEL DERECHO
-        # ============================================================
-
-        panel_der = tk.Frame(
-            card_inner,
-            bg=self.COLORS["card"]
-        )
-
-        panel_der.place(
-            x=340,
-            y=0,
-            width=480,
-            height=500
-        )
-
-        tk.Label(
-            panel_der,
-            text="Iniciar sesión",
-            bg=self.COLORS["card"],
-            fg=self.COLORS["text_primary"],
-            font=("Segoe UI", 20, "bold")
-        ).place(
-            x=52,
-            y=45
-        )
-
-        tk.Label(
-            panel_der,
-            text="Ingrese sus credenciales para continuar",
-            bg=self.COLORS["card"],
-            fg=self.COLORS["text_secondary"],
-            font=("Segoe UI", 9)
-        ).place(
-            x=54,
-            y=82
-        )
-
-        # ============================================================
+        # ====================================================
         # USUARIO
-        # ============================================================
+        # ====================================================
 
-        tk.Label(
-            panel_der,
+        ttk.Label(
+            frame,
             text="Usuario",
-            bg=self.COLORS["card"],
-            fg=self.COLORS["label"],
-            font=("Segoe UI", 9, "bold")
-        ).place(
-            x=52,
-            y=120
+            font=("Segoe UI", 10),
+        ).pack(
+            anchor="w"
         )
 
-        self._user_frame = tk.Frame(
-            panel_der,
-            bg=self.COLORS["input_bg"],
-            highlightbackground=self.COLORS["input_border"],
-            highlightthickness=1
-        )
-
-        self._user_frame.place(
-            x=52,
-            y=145,
-            width=376,
-            height=40
-        )
-
-        self.entry_usuario = tk.Entry(
-            self._user_frame,
-            bg=self.COLORS["input_bg"],
-            fg=self.COLORS["text_primary"],
+        self.entry_usuario = ttk.Entry(
+            frame,
+            textvariable=self.var_usuario,
             font=("Segoe UI", 11),
-            relief="flat",
-            bd=0,
-            insertbackground=self.COLORS["text_primary"]
         )
 
-        self.entry_usuario.place(
-            x=10,
-            y=6,
-            width=356,
-            height=26
+        self.entry_usuario.pack(
+            fill="x",
+            pady=(5, 15),
         )
 
-        # ============================================================
-        # PASSWORD
-        # ============================================================
+        # ====================================================
+        # CONTRASEÑA
+        # ====================================================
 
-        tk.Label(
-            panel_der,
+        ttk.Label(
+            frame,
             text="Contraseña",
-            bg=self.COLORS["card"],
-            fg=self.COLORS["label"],
-            font=("Segoe UI", 9, "bold")
-        ).place(
-            x=52,
-            y=200
+            font=("Segoe UI", 10),
+        ).pack(
+            anchor="w"
         )
 
-        self._pass_frame = tk.Frame(
-            panel_der,
-            bg=self.COLORS["input_bg"],
-            highlightbackground=self.COLORS["input_border"],
-            highlightthickness=1
-        )
-
-        self._pass_frame.place(
-            x=52,
-            y=225,
-            width=376,
-            height=40
-        )
-
-        self.entry_password = tk.Entry(
-            self._pass_frame,
-            bg=self.COLORS["input_bg"],
-            fg=self.COLORS["text_primary"],
+        self.entry_password = ttk.Entry(
+            frame,
+            textvariable=self.var_password,
+            show="*",
             font=("Segoe UI", 11),
-            relief="flat",
-            bd=0,
-            show="•",
-            insertbackground=self.COLORS["text_primary"]
         )
 
-        self.entry_password.place(
-            x=10,
-            y=6,
-            width=320,
-            height=26
+        self.entry_password.pack(
+            fill="x",
+            pady=(5, 20),
         )
 
-        self.btn_ver_pass = tk.Label(
-            self._pass_frame,
-            text="👁",
-            bg=self.COLORS["input_bg"],
-            fg=self.COLORS["text_secondary"],
-            font=("Segoe UI", 12),
-            cursor="hand2"
+        # ====================================================
+        # BOTÓN
+        # ====================================================
+
+        self.btn_login = ttk.Button(
+            frame,
+            text="Iniciar sesión",
+            command=self._iniciar_login,
         )
 
-        self.btn_ver_pass.place(
-            x=340,
-            y=6,
-            width=28,
-            height=26
+        self.btn_login.pack(
+            fill="x",
+            ipady=6,
+            pady=(0, 20),
         )
 
-        self.btn_ver_pass.bind(
-            "<Button-1>",
-            lambda e: self._toggle_password()
-        )
-
-        # ============================================================
-        # MENSAJE
-        # ============================================================
-
-        self.lbl_mensaje = tk.Label(
-            panel_der,
-            text="",
-            bg=self.COLORS["card"],
-            fg=self.COLORS["error"],
-            font=("Segoe UI", 9),
-            anchor="center"
-        )
-
-        self.lbl_mensaje.place(
-            x=52,
-            y=280,
-            width=376,
-            height=30
-        )
-
-        # ============================================================
-        # BOTÓN LOGIN
-        # ============================================================
-
-        self.btn_login = tk.Button(
-            panel_der,
-            text="INICIAR SESIÓN",
-            bg=self.COLORS["btn_bg"],
-            fg=self.COLORS["btn_text"],
-            font=("Segoe UI", 11, "bold"),
-            relief="flat",
-            cursor="hand2",
-            activebackground=self.COLORS["btn_hover"],
-            activeforeground=self.COLORS["btn_text"],
-            bd=0,
-            command=self._on_login_click
-        )
-
-        self.btn_login.place(
-            x=52,
-            y=342,
-            width=376,
-            height=42
-        )
-
-        # ============================================================
+        # ====================================================
         # ESTADO
-        # ============================================================
+        # ====================================================
 
-        self.lbl_estado = tk.Label(
-            panel_der,
-            text="",
-            bg=self.COLORS["card"],
-            fg=self.COLORS["text_secondary"],
+        ttk.Label(
+            frame,
+            textvariable=self.var_estado,
             font=("Segoe UI", 9),
-            anchor="center"
+        ).pack(
+            pady=(5, 5)
         )
 
-        self.lbl_estado.place(
-            x=52,
-            y=420,
-            width=376,
-            height=20
+        # ====================================================
+        # PROGRESO
+        # ====================================================
+
+        self.progress = ttk.Progressbar(
+            frame,
+            orient="horizontal",
+            mode="determinate",
+            maximum=100,
         )
 
-        # ============================================================
+        # ====================================================
         # VERSIÓN
-        # ============================================================
+        # ====================================================
 
-        self.lbl_version = tk.Label(
-            panel_der,
-            text=f"v{APP_VERSION} | © 2025",
-            bg=self.COLORS["card"],
-            fg=self.COLORS["text_muted"],
-            font=("Segoe UI", 8)
+        ttk.Label(
+            frame,
+            textvariable=self.var_version,
+            font=("Segoe UI", 8),
+        ).pack(
+            side="bottom",
+            pady=(20, 0),
         )
 
-        self.lbl_version.place(
-            x=52,
-            y=450,
-            width=376,
-            height=20
-        )
-
-        # ============================================================
-        # EVENTOS
-        # ============================================================
+        # ====================================================
+        # ENTER
+        # ====================================================
 
         self.entry_usuario.bind(
             "<Return>",
-            lambda e: self.entry_password.focus_set()
+            lambda event: self._iniciar_login(),
         )
 
         self.entry_password.bind(
             "<Return>",
-            lambda e: self._on_login_click()
+            lambda event: self._iniciar_login(),
         )
 
-        self.btn_login.bind(
-            "<Enter>",
-            lambda e: self.btn_login.configure(
-                bg=self.COLORS["btn_hover"]
-            )
-        )
+        # ====================================================
+        # DESACTIVAR
+        # ====================================================
 
-        self.btn_login.bind(
-            "<Leave>",
-            lambda e: self.btn_login.configure(
-                bg=self.COLORS["btn_bg"]
-            )
-        )
+        self._habilitar_login(False)
 
-    # ================================================================
-    # GRADIENTE
-    # ================================================================
+    # ========================================================
+    # HABILITAR LOGIN
+    # ========================================================
 
-    def _paint_panel_gradient(self, panel: tk.Frame):
+    def _habilitar_login(self, habilitar: bool):
+
+        estado = "normal" if habilitar else "disabled"
 
         try:
-            panel.bind(
-                "<Configure>",
-                lambda e: self._draw_gradient(
-                    panel,
-                    e.width,
-                    e.height
-                )
+
+            self.entry_usuario.config(
+                state=estado
             )
+
+            self.entry_password.config(
+                state=estado
+            )
+
+            self.btn_login.config(
+                state=estado
+            )
+
+        except tk.TclError:
+            pass
+
+    # ========================================================
+    # MOSTRAR PROGRESO
+    # ========================================================
+
+    def _mostrar_progreso(self):
+
+        try:
+
+            self.progress.pack(
+                fill="x",
+                pady=(0, 10),
+            )
+
+        except tk.TclError:
+            pass
+
+    # ========================================================
+    # OCULTAR PROGRESO
+    # ========================================================
+
+    def _ocultar_progreso(self):
+
+        try:
+            self.progress.pack_forget()
+        except tk.TclError:
+            pass
+
+    # ========================================================
+    # PROGRESO
+    # ========================================================
+
+    def _set_progreso(self, valor):
+
+        try:
+
+            valor = float(valor)
+
+            valor = max(
+                0,
+                min(100, valor),
+            )
+
+            self.progress["value"] = valor
 
         except Exception:
             pass
 
-    def _draw_gradient(
+    # ========================================================
+    # AFTER SEGURO
+    # ========================================================
+
+    def _after_ui(
         self,
-        widget: tk.Widget,
-        w: int,
-        h: int
+        callback,
+        *args,
     ):
-
-        try:
-
-            c = tk.Canvas(
-                widget,
-                width=w,
-                height=h,
-                highlightthickness=0,
-                bd=0,
-                bg=self.COLORS["panel_left_2"]
-            )
-
-            c.place(
-                x=0,
-                y=0,
-                relwidth=1,
-                relheight=1
-            )
-
-            c.tag_lower("all")
-
-            steps = max(2, h // 2)
-
-            r1, g1, b1 = 0x1e, 0x3a, 0x8a
-            r2, g2, b2 = 0x3b, 0x82, 0xf6
-
-            for i in range(steps):
-
-                t = i / steps
-
-                r = int(r1 + (r2 - r1) * t)
-                g = int(g1 + (g2 - g1) * t)
-                b = int(b1 + (b2 - b1) * t)
-
-                color = f"#{r:02x}{g:02x}{b:02x}"
-
-                y0 = int(i * h / steps)
-                y1 = int((i + 1) * h / steps)
-
-                c.create_rectangle(
-                    0,
-                    y0,
-                    w,
-                    y1,
-                    fill=color,
-                    outline=""
-                )
-
-        except Exception:
-            try:
-                widget.configure(
-                    bg=self.COLORS["panel_left_2"]
-                )
-            except Exception:
-                pass
-
-    # ================================================================
-    # MOSTRAR / OCULTAR PASSWORD
-    # ================================================================
-
-    def _toggle_password(self):
-
-        if self._password_visible:
-
-            self.entry_password.config(
-                show="•"
-            )
-
-            self.btn_ver_pass.config(
-                text="👁"
-            )
-
-        else:
-
-            self.entry_password.config(
-                show=""
-            )
-
-            self.btn_ver_pass.config(
-                text="🙈"
-            )
-
-        self._password_visible = not self._password_visible
-
-    # ================================================================
-    # ACTUALIZACIÓN INICIAL
-    # ================================================================
-
-    def _verificar_actualizacion_inicial(self):
 
         if self._cerrando:
             return
 
-        self._actualizacion_en_proceso = True
+        try:
 
-        self.btn_login.configure(
-            state="disabled",
-            text="VERIFICANDO..."
+            self.after(
+                0,
+                lambda: self._ejecutar_ui(
+                    callback,
+                    *args,
+                ),
+            )
+
+        except tk.TclError:
+            pass
+
+    # ========================================================
+    # EJECUTAR UI
+    # ========================================================
+
+    def _ejecutar_ui(
+        self,
+        callback,
+        *args,
+    ):
+
+        if self._cerrando:
+            return
+
+        try:
+
+            callback(*args)
+
+        except tk.TclError:
+            pass
+
+        except Exception as e:
+
+            print(
+                f"[LOGIN] Error UI: {e}"
+            )
+
+    # ========================================================
+    # ACTUALIZACIONES
+    # ========================================================
+
+    def _iniciar_verificacion_actualizacion(self):
+
+        if self._cerrando:
+            return
+
+        self.var_estado.set(
+            "VERIFICANDO ACTUALIZACIONES..."
         )
-
-        self.lbl_estado.configure(
-            text="●  Comprobando actualización...",
-            fg=self.COLORS["btn_bg"]
-        )
-
-        def _trabajo():
-
-            try:
-
-                resultado = consultar_version_remota(
-                    timeout=15
-                )
-
-                self.after(
-                    0,
-                    lambda r=resultado:
-                    self._finalizar_verificacion_actualizacion(r)
-                )
-
-            except Exception as e:
-
-                self.after(
-                    0,
-                    lambda e=e:
-                    self._error_verificacion_actualizacion(str(e))
-                )
 
         threading.Thread(
-            target=_trabajo,
-            daemon=True
+            target=self._hilo_verificar_actualizacion,
+            daemon=True,
         ).start()
 
-    # ================================================================
-    # RESULTADO ACTUALIZACIÓN
-    # ================================================================
+    # ========================================================
+    # HILO ACTUALIZACIÓN
+    # ========================================================
 
-    def _finalizar_verificacion_actualizacion(
+    def _hilo_verificar_actualizacion(self):
+
+        try:
+
+            print(
+                "[LOGIN] Consultando versión remota..."
+            )
+
+            resultado = consultar_version_remota(
+                timeout=15
+            )
+
+            print(
+                f"[LOGIN] Resultado actualización: {resultado}"
+            )
+
+            if not isinstance(
+                resultado,
+                dict,
+            ):
+
+                self._after_ui(
+                    self._actualizacion_error,
+                    "Respuesta inválida del servidor.",
+                )
+
+                return
+
+            if not resultado.get(
+                "ok",
+                False,
+            ):
+
+                self._after_ui(
+                    self._actualizacion_error,
+                    resultado.get(
+                        "error",
+                        "No se pudo verificar la versión.",
+                    ),
+                )
+
+                return
+
+            self.version_remota = resultado.get(
+                "version_remota"
+            )
+
+            self.patch_url = resultado.get(
+                "patch_url"
+            )
+
+            self.checksum_sha256 = resultado.get(
+                "checksum_sha256"
+            )
+
+            self.release_notes = (
+                resultado.get("release_notes")
+                or resultado.get("notas")
+                or ""
+            )
+
+            hay_actualizacion = bool(
+                resultado.get(
+                    "hay_actualizacion",
+                    False,
+                )
+            )
+
+            if hay_actualizacion:
+
+                self._after_ui(
+                    self._actualizacion_disponible
+                )
+
+            else:
+
+                self._after_ui(
+                    self._actualizacion_completa
+                )
+
+        except Exception as e:
+
+            print(
+                f"[LOGIN] Error actualización: {e}"
+            )
+
+            self._after_ui(
+                self._actualizacion_error,
+                str(e),
+            )
+
+    # ========================================================
+    # ACTUALIZACIÓN COMPLETA
+    # ========================================================
+
+    def _actualizacion_completa(self):
+
+        if self._cerrando:
+            return
+
+        self._actualizacion_verificada = True
+
+        self.var_estado.set(
+            "Versión actualizada. Verificando conexión..."
+        )
+
+        self._verificar_conexion_bd()
+
+    # ========================================================
+    # ERROR ACTUALIZACIÓN
+    # ========================================================
+
+    def _actualizacion_error(
         self,
-        resultado: Dict[str, Any]
+        mensaje,
+    ):
+
+        if self._cerrando:
+            return
+
+        print(
+            f"[LOGIN] Error actualización: {mensaje}"
+        )
+
+        self._actualizacion_verificada = True
+
+        self.var_estado.set(
+            "No se pudo verificar actualización. Verificando conexión..."
+        )
+
+        self._verificar_conexion_bd()
+
+    # ========================================================
+    # ACTUALIZACIÓN DISPONIBLE
+    # ========================================================
+
+    def _actualizacion_disponible(self):
+
+        if self._cerrando:
+            return
+
+        version = (
+            self.version_remota
+            or "nueva"
+        )
+
+        # ====================================================
+        # DESARROLLO
+        # ====================================================
+
+        if not getattr(
+            sys,
+            "frozen",
+            False,
+        ):
+
+            messagebox.showinfo(
+                "Actualización disponible",
+                (
+                    f"Hay una nueva versión disponible: v{version}\n\n"
+                    "Estás ejecutando la aplicación en modo desarrollo.\n\n"
+                    "La actualización automática se ejecutará "
+                    "cuando la aplicación esté instalada como EXE."
+                ),
+                parent=self,
+            )
+
+            self._actualizacion_verificada = True
+
+            self.var_estado.set(
+                "Modo desarrollo. Verificando conexión..."
+            )
+
+            self._verificar_conexion_bd()
+
+            return
+
+        # ====================================================
+        # EXE
+        # ====================================================
+
+        texto = (
+            "Hay una nueva versión disponible.\n\n"
+            f"Versión instalada: v{APP_VERSION}\n"
+            f"Nueva versión: v{version}\n\n"
+        )
+
+        if self.release_notes:
+
+            texto += (
+                "Cambios:\n"
+                f"{self.release_notes}\n\n"
+            )
+
+        texto += (
+            "La actualización es obligatoria para continuar."
+        )
+
+        continuar = messagebox.askyesno(
+            "Actualización requerida",
+            texto,
+            parent=self,
+        )
+
+        if not continuar:
+
+            self.var_estado.set(
+                "Actualización pendiente. No se puede iniciar sesión."
+            )
+
+            self._habilitar_login(False)
+
+            return
+
+        if not self.patch_url:
+
+            messagebox.showerror(
+                "Actualización",
+                (
+                    "El servidor indicó que existe una actualización "
+                    "pero no proporcionó la URL del archivo."
+                ),
+                parent=self,
+            )
+
+            self.var_estado.set(
+                "Error de actualización."
+            )
+
+            return
+
+        self._actualizacion_en_proceso = True
+
+        self._habilitar_login(False)
+
+        self._mostrar_progreso()
+
+        self._set_progreso(0)
+
+        self.var_estado.set(
+            f"Descargando versión v{version}..."
+        )
+
+        threading.Thread(
+            target=self._hilo_descargar_actualizacion,
+            daemon=True,
+        ).start()
+
+    # ========================================================
+    # DESCARGAR
+    # ========================================================
+
+    def _hilo_descargar_actualizacion(self):
+
+        try:
+
+            updates_dir = obtener_directorio_updates()
+
+            version_texto = str(
+                self.version_remota
+                or "update"
+            )
+
+            nombre_zip = (
+                f"FacturasVentas-"
+                f"{version_texto.replace('.', '_')}"
+                f".zip"
+            )
+
+            ruta_zip = os.path.join(
+                updates_dir,
+                nombre_zip,
+            )
+
+            print(
+                f"[LOGIN] URL ZIP: {self.patch_url}"
+            )
+
+            print(
+                f"[LOGIN] ZIP destino: {ruta_zip}"
+            )
+
+            def progreso_descarga(
+                porcentaje,
+                *args,
+                **kwargs,
+            ):
+
+                try:
+                    porcentaje = float(
+                        porcentaje
+                    )
+                except Exception:
+                    return
+
+                self._after_ui(
+                    self._set_progreso,
+                    porcentaje,
+                )
+
+            descarga = descargar_archivo(
+                self.patch_url,
+                ruta_zip,
+                progress_cb=progreso_descarga,
+            )
+
+            if not descarga.get("ok"):
+
+                raise RuntimeError(
+                    "No se pudo descargar el parche: "
+                    + descarga.get(
+                        "error",
+                        "Error desconocido.",
+                    )
+                )
+
+            print(
+                "[LOGIN] Descarga completada"
+            )
+
+            self._after_ui(
+                self.var_estado.set,
+                "Verificando archivo descargado...",
+            )
+
+            self._after_ui(
+                self._set_progreso,
+                0,
+            )
+
+            def progreso_extraccion(
+                porcentaje,
+                *args,
+                **kwargs,
+            ):
+
+                try:
+                    porcentaje = float(
+                        porcentaje
+                    )
+                except Exception:
+                    return
+
+                self._after_ui(
+                    self._set_progreso,
+                    porcentaje,
+                )
+
+            patch_result = aplicar_parche_y_cerrar(
+                ruta_zip,
+                checksum_esperado=self.checksum_sha256,
+                extraer_progress_cb=progreso_extraccion,
+            )
+
+            print(
+                f"[LOGIN] Resultado parche: {patch_result}"
+            )
+
+            if not isinstance(
+                patch_result,
+                dict,
+            ):
+
+                raise RuntimeError(
+                    "El actualizador no devolvió un resultado válido."
+                )
+
+            ruta_bat = patch_result.get(
+                "bat_path"
+            )
+
+            if not ruta_bat:
+
+                raise RuntimeError(
+                    "No se generó el archivo BAT del actualizador."
+                )
+
+            self._after_ui(
+                self.var_estado.set,
+                "Preparando actualización...",
+            )
+
+            self._after_ui(
+                self._set_progreso,
+                100,
+            )
+
+            self._after_ui(
+                self._ejecutar_actualizador,
+                ruta_bat,
+            )
+
+        except Exception as e:
+
+            print(
+                f"[LOGIN] Error actualizando: {e}"
+            )
+
+            self._after_ui(
+                self._actualizacion_fallida,
+                str(e),
+            )
+
+    # ========================================================
+    # EJECUTAR ACTUALIZADOR
+    # ========================================================
+
+    def _ejecutar_actualizador(
+        self,
+        ruta_bat,
+    ):
+
+        if self._cerrando:
+            return
+
+        try:
+
+            print(
+                f"[LOGIN] Ejecutando BAT: {ruta_bat}"
+            )
+
+            resultado = ejecutar_actualizador_y_salir(
+                ruta_bat
+            )
+
+            print(
+                f"[LOGIN] Resultado actualizador: {resultado}"
+            )
+
+            if not resultado:
+
+                raise RuntimeError(
+                    "No se pudo iniciar el actualizador."
+                )
+
+            self._cerrando = True
+
+            try:
+                self.auth.cerrar_sesion()
+            except Exception:
+                pass
+
+            try:
+                self.quit()
+            except Exception:
+                pass
+
+            try:
+                self.destroy()
+            except Exception:
+                pass
+
+        except Exception as e:
+
+            print(
+                f"[LOGIN] Error ejecutando actualizador: {e}"
+            )
+
+            self._actualizacion_fallida(
+                str(e)
+            )
+
+    # ========================================================
+    # ACTUALIZACIÓN FALLIDA
+    # ========================================================
+
+    def _actualizacion_fallida(
+        self,
+        mensaje,
     ):
 
         if self._cerrando:
@@ -686,687 +898,648 @@ class LoginWindow(tk.Tk):
 
         self._actualizacion_en_proceso = False
 
-        if not resultado.get("ok"):
+        self._ocultar_progreso()
 
-            self._mostrar_error_actualizacion(
-                resultado.get(
-                    "error",
-                    "No se pudo comprobar la versión del sistema."
+        self.var_estado.set(
+            "Error durante la actualización."
+        )
+
+        messagebox.showerror(
+            "Actualización",
+            (
+                "No se pudo completar la actualización.\n\n"
+                f"Detalle:\n{mensaje}"
+            ),
+            parent=self,
+        )
+
+        self._habilitar_login(False)
+
+    # ========================================================
+    # CONEXIÓN BD
+    # ========================================================
+
+    def _verificar_conexion_bd(self):
+
+        if self._cerrando:
+            return
+
+        if self._conectando_bd:
+            return
+
+        self._conectando_bd = True
+
+        self.var_estado.set(
+            "Verificando conexión a la base de datos..."
+        )
+
+        threading.Thread(
+            target=self._hilo_verificar_bd,
+            daemon=True,
+        ).start()
+
+    # ========================================================
+    # HILO BD
+    # ========================================================
+
+    def _hilo_verificar_bd(self):
+
+        try:
+
+            conectado = None
+
+            if hasattr(
+                self.auth,
+                "verificar_conexion",
+            ):
+
+                conectado = (
+                    self.auth.verificar_conexion()
                 )
+
+            elif hasattr(
+                self.auth,
+                "test_connection",
+            ):
+
+                conectado = (
+                    self.auth.test_connection()
+                )
+
+            elif hasattr(
+                self.auth,
+                "probar_conexion",
+            ):
+
+                conectado = (
+                    self.auth.probar_conexion()
+                )
+
+            elif hasattr(
+                self.auth,
+                "conexion",
+            ):
+
+                conectado = (
+                    self.auth.conexion is not None
+                )
+
+            else:
+
+                conectado = True
+
+            print(
+                f"[LOGIN] Estado BD: {conectado}"
             )
 
-            return
-
-        hay_actualizacion = bool(
-            resultado.get("hay_actualizacion")
-        )
-
-        if not hay_actualizacion:
-
-            self._actualizacion_verificada = True
-
-            self.lbl_estado.configure(
-                text="●  Buscando conexión con la base de datos...",
-                fg=self.COLORS["btn_bg"]
+            self._after_ui(
+                self._resultado_verificacion_bd,
+                bool(conectado),
+                None,
             )
 
-            self._verificar_conexion()
+        except Exception as e:
 
-            self.btn_login.configure(
-                state="normal",
-                text="INICIAR SESIÓN"
+            print(
+                f"[LOGIN] Error BD: {e}"
             )
 
-            self.after(
-                150,
-                lambda: self.entry_usuario.focus_set()
+            self._after_ui(
+                self._resultado_verificacion_bd,
+                False,
+                str(e),
             )
 
-            return
+    # ========================================================
+    # RESULTADO BD
+    # ========================================================
 
-        # ============================================================
-        # HAY ACTUALIZACIÓN
-        # ============================================================
-
-        # En desarrollo (python main.py) NO se descarga ni se aplica
-        # el ZIP. El auto-parche requiere una aplicación compilada
-        # como EXE. Se permite continuar normalmente con el login.
-        if not self._es_exe():
-            self._actualizacion_verificada = True
-
-            self.lbl_estado.configure(
-                text="●  Modo desarrollo — actualización omitida",
-                fg=self.COLORS["warning"]
-            )
-
-            self._mostrar_mensaje(
-                (
-                    f"Actualización disponible "
-                    f"(v{resultado.get('version_remota', 'nueva')}). "
-                    "Se omitió porque estás ejecutando Python localmente."
-                ),
-                "info"
-            )
-
-            self._verificar_conexion()
-
-            self.btn_login.configure(
-                state="normal",
-                text="INICIAR SESIÓN"
-            )
-
-            self.after(
-                150,
-                lambda: self.entry_usuario.focus_set()
-            )
-
-            return
-
-        self._version_remota = resultado.get(
-            "version_remota"
-        )
-
-        self._patch_url = resultado.get(
-            "patch_url"
-        )
-
-        self._checksum = resultado.get(
-            "checksum_sha256"
-        )
-
-        if not self._patch_url:
-
-            self._mostrar_error_actualizacion(
-                "Existe una actualización disponible, "
-                "pero el servidor no proporcionó patch_url."
-            )
-
-            return
-
-        self._mostrar_actualizacion_obligatoria(
-            resultado
-        )
-
-    # ================================================================
-    # ACTUALIZACIÓN OBLIGATORIA
-    # ================================================================
-
-    def _mostrar_actualizacion_obligatoria(
+    def _resultado_verificacion_bd(
         self,
-        resultado: Dict[str, Any]
+        conectado,
+        error,
     ):
 
-        version_nueva = (
-            resultado.get("version_remota")
-            or "nueva"
-        )
+        self._conectando_bd = False
 
-        notas = resultado.get("release_notes") or resultado.get("notas") or []
+        if self._cerrando:
+            return
 
-        if isinstance(notas, list):
-            notas = "\n".join(
-                f"• {str(nota)}"
-                for nota in notas
+        if conectado:
+
+            self.var_estado.set(
+                "Sistema listo. Inicie sesión."
             )
 
-        if not notas:
-            notas = "Se ha publicado una nueva versión del sistema."
+            self._actualizacion_verificada = True
 
-        self.lbl_estado.configure(
-            text=f"●  Actualización requerida: v{version_nueva}",
-            fg=self.COLORS["warning"]
-        )
+            self._habilitar_login(True)
 
-        # No preguntamos si desea actualizar.
-        # La actualización es obligatoria.
-        messagebox.showinfo(
-            "Actualización obligatoria",
-            (
-                f"Hay una nueva versión disponible.\n\n"
-                f"Versión instalada: {APP_VERSION}\n"
-                f"Nueva versión: {version_nueva}\n\n"
-                f"{notas}\n\n"
-                "La actualización se instalará ahora.\n"
-                "No podrá iniciar sesión hasta completar "
-                "la actualización."
-            ),
-            parent=self
-        )
+            try:
+                self.entry_usuario.focus_set()
+            except Exception:
+                pass
 
-        self._iniciar_actualizacion_login()
+        else:
 
-    # ================================================================
-    # INICIAR ACTUALIZACIÓN
-    # ================================================================
+            self.var_estado.set(
+                "Sin conexión a la base de datos."
+            )
 
-    def _iniciar_actualizacion_login(self):
+            self._habilitar_login(False)
+
+            detalle = ""
+
+            if error:
+                detalle = (
+                    f"\n\nDetalle:\n{error}"
+                )
+
+            messagebox.showerror(
+                "Conexión",
+                (
+                    "No se pudo conectar con la base de datos."
+                    f"{detalle}"
+                ),
+                parent=self,
+            )
+
+    # ========================================================
+    # LOGIN
+    # ========================================================
+
+    def _iniciar_login(self):
+
+        if self._cerrando:
+            return
 
         if self._actualizacion_en_proceso:
             return
 
-        if not self._patch_url:
+        if not self._actualizacion_verificada:
 
-            self._mostrar_error_actualizacion(
-                "No existe una URL válida para descargar "
-                "la actualización."
+            messagebox.showwarning(
+                "FacturasVentas",
+                "Espere mientras se verifica el sistema.",
+                parent=self,
             )
 
             return
 
-        self._actualizacion_en_proceso = True
+        usuario = self.var_usuario.get().strip()
 
-        self.btn_login.configure(
-            state="disabled",
-            text="ACTUALIZANDO..."
-        )
+        password = self.var_password.get()
 
-        self._mostrar_progreso_actualizacion(
-            self._patch_url,
-            self._checksum,
-            self._version_remota
-        )
+        # ====================================================
+        # VALIDAR USUARIO
+        # ====================================================
 
-    # ================================================================
-    # DIÁLOGO PROGRESO
-    # ================================================================
+        if not usuario:
 
-    def _mostrar_progreso_actualizacion(
-        self,
-        patch_url: str,
-        checksum: Optional[str],
-        version_remota: Optional[str]
-    ):
-
-        dlg = tk.Toplevel(self)
-
-        dlg.title("Actualización")
-        dlg.configure(bg="#ffffff")
-        dlg.geometry("460x220")
-        dlg.resizable(False, False)
-        dlg.transient(self)
-        dlg.grab_set()
-
-        dlg.protocol(
-            "WM_DELETE_WINDOW",
-            lambda: None
-        )
-
-        dlg.update_idletasks()
-
-        x = (
-            self.winfo_rootx()
-            + (self.winfo_width() - 460) // 2
-        )
-
-        y = (
-            self.winfo_rooty()
-            + (self.winfo_height() - 220) // 2
-        )
-
-        dlg.geometry(
-            f"+{max(x, 50)}+{max(y, 50)}"
-        )
-
-        tk.Label(
-            dlg,
-            text="📦",
-            bg="#ffffff",
-            fg="#2563eb",
-            font=("Segoe UI", 26)
-        ).pack(
-            pady=(18, 4)
-        )
-
-        tk.Label(
-            dlg,
-            text=f"Actualizando a v{version_remota}",
-            bg="#ffffff",
-            fg="#0f172a",
-            font=("Segoe UI", 11, "bold")
-        ).pack()
-
-        lbl_estado = tk.Label(
-            dlg,
-            text="Preparando descarga...",
-            bg="#ffffff",
-            fg="#64748b",
-            font=("Segoe UI", 9)
-        )
-
-        lbl_estado.pack(
-            pady=(2, 0)
-        )
-
-        pb_frame = tk.Frame(
-            dlg,
-            bg="#ffffff"
-        )
-
-        pb_frame.pack(
-            fill="x",
-            padx=28,
-            pady=(12, 0)
-        )
-
-        estilo = ttk.Style(dlg)
-
-        try:
-            estilo.theme_use("clam")
-        except Exception:
-            pass
-
-        estilo.configure(
-            "FV.Horizontal.TProgressbar",
-            troughcolor="#e2e8f0",
-            background="#2563eb",
-            bordercolor="#ffffff",
-            lightcolor="#2563eb",
-            darkcolor="#1d4ed8"
-        )
-
-        pb = ttk.Progressbar(
-            pb_frame,
-            style="FV.Horizontal.TProgressbar",
-            orient="horizontal",
-            length=400,
-            mode="determinate"
-        )
-
-        pb.pack(
-            fill="x"
-        )
-
-        pb["maximum"] = 100
-        pb["value"] = 0
-
-        lbl_porcentaje = tk.Label(
-            dlg,
-            text="0%",
-            bg="#ffffff",
-            fg="#2563eb",
-            font=("Segoe UI", 9, "bold")
-        )
-
-        lbl_porcentaje.pack(
-            pady=(4, 0)
-        )
-
-        self._ejecutar_descarga_actualizacion(
-            dlg,
-            pb,
-            lbl_estado,
-            lbl_porcentaje,
-            patch_url,
-            checksum,
-            version_remota
-        )
-
-    # ================================================================
-    # DESCARGAR Y PREPARAR PARCHE
-    # ================================================================
-
-    def _ejecutar_descarga_actualizacion(
-        self,
-        dlg,
-        pb,
-        lbl_estado,
-        lbl_porcentaje,
-        patch_url: str,
-        checksum: Optional[str],
-        version_remota: Optional[str]
-    ):
-
-        dir_app = obtener_directorio_ejecutable()
-
-        # IMPORTANTE:
-        # usamos ZIP real, no .patch
-        nombre_zip = (
-            f"FacturasVentas-"
-            f"{str(version_remota).replace('.', '_')}.zip"
-        )
-
-        ruta_updates = os.path.join(
-            dir_app,
-            "_updates"
-        )
-
-        ruta_zip = os.path.join(
-            ruta_updates,
-            nombre_zip
-        )
-
-        os.makedirs(
-            ruta_updates,
-            exist_ok=True
-        )
-
-        ultimo_porcentaje = [-1]
-
-        # ============================================================
-        # PROGRESO DESCARGA
-        # ============================================================
-
-        def prog_descarga(
-            actual: int,
-            total: int
-        ):
-
-            if total <= 0:
-                return
-
-            pct = int(
-                (actual / total) * 100
+            messagebox.showwarning(
+                "Inicio de sesión",
+                "Ingrese el usuario.",
+                parent=self,
             )
 
-            if pct == ultimo_porcentaje[0]:
-                return
+            self.entry_usuario.focus_set()
 
-            ultimo_porcentaje[0] = pct
+            return
 
-            mb_act = actual / (
-                1024 * 1024
+        # ====================================================
+        # VALIDAR PASSWORD
+        # ====================================================
+
+        if not password:
+
+            messagebox.showwarning(
+                "Inicio de sesión",
+                "Ingrese la contraseña.",
+                parent=self,
             )
 
-            mb_tot = total / (
-                1024 * 1024
-            )
+            self.entry_password.focus_set()
 
-            self.after(
-                0,
-                lambda:
-                self._ui_set_progreso(
-                    pb,
-                    lbl_porcentaje,
-                    lbl_estado,
-                    pct,
-                    (
-                        f"Descargando... "
-                        f"{mb_act:.1f} / "
-                        f"{mb_tot:.1f} MB"
-                    )
-                )
-            )
+            return
 
-        # ============================================================
-        # PROGRESO EXTRACCIÓN
-        # ============================================================
+        # ====================================================
+        # DESACTIVAR
+        # ====================================================
 
-        def prog_extraccion(
-            actual: int,
-            total: int
-        ):
+        self._habilitar_login(False)
 
-            if total <= 0:
-                return
+        self.var_estado.set(
+            "Autenticando..."
+        )
 
-            pct = int(
-                (actual / total) * 100
-            )
-
-            self.after(
-                0,
-                lambda:
-                self._ui_set_progreso(
-                    pb,
-                    lbl_porcentaje,
-                    lbl_estado,
-                    pct,
-                    (
-                        f"Instalando archivos... "
-                        f"{actual}/{total}"
-                    )
-                )
-            )
-
-        # ============================================================
-        # TRABAJO EN SEGUNDO PLANO
-        # ============================================================
-
-        def _trabajo():
-
-            try:
-
-                # ----------------------------------------------------
-                # DESCARGA
-                # ----------------------------------------------------
-
-                self.after(
-                    0,
-                    lambda:
-                    lbl_estado.configure(
-                        text="Descargando actualización..."
-                    )
-                )
-
-                descarga = descargar_archivo(
-                    patch_url,
-                    ruta_zip,
-                    progress_cb=prog_descarga
-                )
-
-                if not descarga.get("ok"):
-
-                    error = descarga.get(
-                        "error"
-                    )
-
-                    if not error:
-                        errores = (
-                            descarga.get("errores")
-                            or []
-                        )
-
-                        error = (
-                            errores[-1]
-                            if errores
-                            else "Error desconocido."
-                        )
-
-                    self.after(
-                        0,
-                        lambda e=error:
-                        self._ui_error_progreso(
-                            dlg,
-                            str(e)
-                        )
-                    )
-
-                    return
-
-                # ----------------------------------------------------
-                # CHECKSUM
-                # ----------------------------------------------------
-
-                self.after(
-                    0,
-                    lambda:
-                    lbl_estado.configure(
-                        text="Verificando integridad..."
-                    )
-                )
-
-                self.after(
-                    0,
-                    lambda:
-                    self._ui_set_progreso(
-                        pb,
-                        lbl_porcentaje,
-                        lbl_estado,
-                        100,
-                        "Descarga completada. Verificando..."
-                    )
-                )
-
-                # ----------------------------------------------------
-                # PREPARAR PARCHE
-                # ----------------------------------------------------
-
-                self.after(
-                    0,
-                    lambda:
-                    lbl_estado.configure(
-                        text="Preparando instalación..."
-                    )
-                )
-
-                patch_result = aplicar_parche_y_cerrar(
-                    ruta_zip,
-                    checksum_esperado=checksum,
-                    extraer_progress_cb=prog_extraccion
-                )
-
-                if not patch_result.get("ok"):
-
-                    error = patch_result.get(
-                        "error",
-                        "No se pudo preparar la actualización."
-                    )
-
-                    self.after(
-                        0,
-                        lambda e=error:
-                        self._ui_error_progreso(
-                            dlg,
-                            str(e)
-                        )
-                    )
-
-                    return
-
-                ruta_bat = patch_result.get(
-                    "bat_path"
-                )
-
-                if not ruta_bat:
-
-                    self.after(
-                        0,
-                        lambda:
-                        self._ui_error_progreso(
-                            dlg,
-                            "No se generó el script de actualización."
-                        )
-                    )
-
-                    return
-
-                # ----------------------------------------------------
-                # LISTO PARA CERRAR
-                # ----------------------------------------------------
-
-                self.after(
-                    0,
-                    lambda:
-                    self._ui_set_progreso(
-                        pb,
-                        lbl_porcentaje,
-                        lbl_estado,
-                        100,
-                        "Actualización preparada. Reiniciando..."
-                    )
-                )
-
-                self.after(
-                    800,
-                    lambda:
-                    self._ejecutar_actualizador(
-                        dlg,
-                        ruta_bat
-                    )
-                )
-
-            except Exception as e:
-
-                self.after(
-                    0,
-                    lambda e=e:
-                    self._ui_error_progreso(
-                        dlg,
-                        str(e)
-                    )
-                )
+        # ====================================================
+        # AUTENTICAR EN SEGUNDO PLANO
+        # ====================================================
 
         threading.Thread(
-            target=_trabajo,
-            daemon=True
+            target=self._hilo_login,
+            args=(usuario, password),
+            daemon=True,
         ).start()
 
-    # ================================================================
-    # EJECUTAR BAT
-    # ================================================================
+    # ========================================================
+    # HILO LOGIN
+    # ========================================================
 
-    def _ejecutar_actualizador(
+    def _hilo_login(
         self,
-        dlg,
-        ruta_bat: str
+        usuario,
+        password,
+    ):
+
+        try:
+
+            print(
+                f"[LOGIN] Autenticando usuario: {usuario}"
+            )
+
+            resultado = self.auth.autenticar(
+                usuario,
+                password,
+            )
+
+            print(
+                f"[LOGIN] Resultado autenticar: {resultado}"
+            )
+
+            self._after_ui(
+                self._procesar_login,
+                resultado,
+            )
+
+        except Exception as e:
+
+            print(
+                f"[LOGIN] Excepción autenticación: {e}"
+            )
+
+            self._after_ui(
+                self._login_error,
+                str(e),
+            )
+
+    # ========================================================
+    # PROCESAR LOGIN
+    # ========================================================
+
+    def _procesar_login(
+        self,
+        resultado,
     ):
 
         if self._cerrando:
             return
 
-        if not ruta_bat or not os.path.exists(ruta_bat):
-
-            self._ui_error_progreso(
-                dlg,
-                "No se encontró el script de actualización."
-            )
-
-            return
-
-        try:
-            dlg.grab_release()
-        except Exception:
-            pass
-
-        try:
-            dlg.destroy()
-        except Exception:
-            pass
-
-        # ============================================================
-        # LANZAMOS EL BAT
-        # ============================================================
-
-        ok = ejecutar_actualizador_y_salir(
-            ruta_bat
+        print(
+            "[LOGIN] Procesando resultado..."
         )
 
-        if not ok:
+        print(
+            f"[LOGIN] Tipo resultado: {type(resultado)}"
+        )
 
-            self._actualizacion_en_proceso = False
+        print(
+            f"[LOGIN] Resultado: {resultado}"
+        )
 
-            self.btn_login.configure(
-                state="disabled",
-                text="ACTUALIZACIÓN REQUERIDA"
+        autenticado = False
+
+        usuario_resultado = resultado
+
+        # ====================================================
+        # RESULTADO BOOLEANO
+        # ====================================================
+
+        if isinstance(
+            resultado,
+            bool,
+        ):
+
+            autenticado = resultado
+
+            if autenticado:
+
+                usuario_actual = getattr(
+                    self.auth,
+                    "usuario_actual",
+                    None,
+                )
+
+                if usuario_actual is not None:
+
+                    usuario_resultado = (
+                        usuario_actual
+                    )
+
+        # ====================================================
+        # RESULTADO DICT
+        # ====================================================
+
+        elif isinstance(
+            resultado,
+            dict,
+        ):
+
+            # =================================================
+            # AQUÍ ESTÁ LA CORRECCIÓN IMPORTANTE
+            #
+            # AuthController devuelve:
+            #
+            # {
+            #     "exito": True,
+            #     "mensaje": "Login exitoso",
+            #     "usuario": {...}
+            # }
+            #
+            # =================================================
+
+            autenticado = bool(
+                resultado.get(
+                    "exito",
+                    resultado.get(
+                        "ok",
+                        resultado.get(
+                            "success",
+                            resultado.get(
+                                "autenticado",
+                                False,
+                            ),
+                        ),
+                    ),
+                )
             )
 
-            messagebox.showerror(
-                "Actualización",
-                (
-                    "No se pudo iniciar el actualizador.\n\n"
-                    "La aplicación no puede continuar "
-                    "hasta completar la actualización."
-                ),
-                parent=self
+            print(
+                f"[LOGIN] Campo exito: "
+                f"{resultado.get('exito')}"
             )
+
+            print(
+                f"[LOGIN] Autenticado: "
+                f"{autenticado}"
+            )
+
+            # =================================================
+            # OBTENER USUARIO
+            # =================================================
+
+            if autenticado:
+
+                usuario_resultado = (
+                    resultado.get("usuario")
+                    or resultado.get("user")
+                    or resultado
+                )
+
+                print(
+                    "[LOGIN] Usuario obtenido:"
+                )
+
+                print(
+                    usuario_resultado
+                )
+
+        # ====================================================
+        # OTRO TIPO
+        # ====================================================
+
+        else:
+
+            autenticado = bool(
+                resultado
+            )
+
+        # ====================================================
+        # LOGIN CORRECTO
+        # ====================================================
+
+        if autenticado:
+
+            print(
+                "========================================"
+            )
+
+            print(
+                "[LOGIN] AUTENTICACIÓN CORRECTA"
+            )
+
+            print(
+                f"[LOGIN] USUARIO: {usuario_resultado}"
+            )
+
+            print(
+                "========================================"
+            )
+
+            self.var_estado.set(
+                "Inicio de sesión correcto..."
+            )
+
+            # =================================================
+            # GUARDAR USUARIO EN AUTH
+            # =================================================
+
+            try:
+
+                if hasattr(
+                    self.auth,
+                    "usuario_actual",
+                ):
+
+                    self.auth.usuario_actual = (
+                        usuario_resultado
+                    )
+
+            except Exception as e:
+
+                print(
+                    f"[LOGIN] No se pudo guardar "
+                    f"usuario_actual: {e}"
+                )
+
+            # =================================================
+            # GUARDAR CALLBACK
+            # =================================================
+
+            callback = (
+                self.on_login_success
+            )
+
+            # =================================================
+            # IMPORTANTE:
+            #
+            # Cerramos SOLO la ventana.
+            #
+            # NO hacemos:
+            #
+            # self.auth.cerrar_sesion()
+            #
+            # porque MainWindow necesita la sesión.
+            # =================================================
+
+            self._cerrando = True
+
+            try:
+                self.quit()
+            except Exception:
+                pass
+
+            try:
+                self.destroy()
+            except Exception:
+                pass
+
+            # =================================================
+            # MANDAR USUARIO A main.py
+            # =================================================
+
+            if callback:
+
+                try:
+
+                    print(
+                        "[LOGIN] Ejecutando "
+                        "on_login_success..."
+                    )
+
+                    callback(
+                        usuario_resultado
+                    )
+
+                    print(
+                        "[LOGIN] on_login_success ejecutado."
+                    )
+
+                except Exception as e:
+
+                    print(
+                        "[LOGIN] ERROR en "
+                        "on_login_success:"
+                    )
+
+                    print(
+                        repr(e)
+                    )
+
+                    try:
+
+                        messagebox.showerror(
+                            "Error",
+                            (
+                                "El login fue correcto, "
+                                "pero ocurrió un error "
+                                "al abrir el panel.\n\n"
+                                f"{e}"
+                            ),
+                        )
+
+                    except Exception:
+                        pass
+
+            else:
+
+                print(
+                    "[LOGIN] ADVERTENCIA: "
+                    "No existe on_login_success."
+                )
 
             return
 
-        # ============================================================
-        # IMPORTANTE:
-        #
-        # NO usamos sys.exit()
-        # NO usamos os._exit()
-        #
-        # Destruimos la ventana raíz.
-        # El BAT queda encargado de esperar al proceso,
-        # reemplazar el EXE y abrir la nueva versión.
-        # ============================================================
+        # ====================================================
+        # LOGIN INCORRECTO
+        # ====================================================
+
+        print(
+            "[LOGIN] AUTENTICACIÓN FALLIDA"
+        )
+
+        self._login_error(
+            (
+                resultado.get(
+                    "mensaje",
+                    "Usuario o contraseña incorrectos.",
+                )
+                if isinstance(resultado, dict)
+                else "Usuario o contraseña incorrectos."
+            )
+        )
+
+    # ========================================================
+    # ERROR LOGIN
+    # ========================================================
+
+    def _login_error(
+        self,
+        mensaje,
+    ):
+
+        if self._cerrando:
+            return
+
+        self.var_estado.set(
+            "Error de autenticación."
+        )
+
+        self._habilitar_login(True)
+
+        try:
+            self.entry_password.focus_set()
+        except Exception:
+            pass
+
+        messagebox.showerror(
+            "Inicio de sesión",
+            mensaje,
+            parent=self,
+        )
+
+    # ========================================================
+    # CERRAR
+    # ========================================================
+
+    def _cerrar_ventana(self):
+
+        if self._actualizacion_en_proceso:
+
+            continuar = messagebox.askyesno(
+                "Actualización",
+                (
+                    "Hay una actualización en proceso.\n\n"
+                    "¿Desea cancelar y cerrar la aplicación?"
+                ),
+                parent=self,
+            )
+
+            if not continuar:
+                return
 
         self._cerrando = True
 
+        # ====================================================
+        # CERRAR SESIÓN
+        # ====================================================
+
         try:
+
             self.auth.cerrar_sesion()
+
+        except Exception as e:
+
+            print(
+                f"[LOGIN] Error cerrando sesión: {e}"
+            )
+
+        # ====================================================
+        # CERRAR TK
+        # ====================================================
+
+        try:
+            self.quit()
         except Exception:
             pass
 
@@ -1375,515 +1548,36 @@ class LoginWindow(tk.Tk):
         except Exception:
             pass
 
-    # ================================================================
-    # ERROR VERIFICACIÓN
-    # ================================================================
 
-    def _error_verificacion_actualizacion(
-        self,
-        mensaje: str
-    ):
+# ============================================================
+# FUNCIÓN COMPATIBILIDAD
+# ============================================================
 
-        self._actualizacion_en_proceso = False
+def mostrar_login(
+    auth: Optional[AuthController] = None,
+    on_login_success: Optional[Callable[[Any], None]] = None,
+):
 
-        self._mostrar_error_actualizacion(
-            mensaje
-        )
+    ventana = LoginWindow(
+        auth=auth,
+        on_login_success=on_login_success,
+    )
 
-    # ================================================================
-    # ERROR ACTUALIZACIÓN
-    # ================================================================
+    ventana.mainloop()
 
-    def _mostrar_error_actualizacion(
-        self,
-        mensaje: str
-    ):
+    return ventana
 
-        self.btn_login.configure(
-            state="disabled",
-            text="ACTUALIZACIÓN REQUERIDA"
-        )
 
-        self.lbl_estado.configure(
-            text="⚠  No se pudo verificar la actualización",
-            fg=self.COLORS["error"]
-        )
+# ============================================================
+# EJECUCIÓN DIRECTA
+# ============================================================
 
-        self._mostrar_mensaje(
-            (
-                "No puede iniciar sesión hasta "
-                "verificar la actualización."
-            ),
-            "error"
-        )
+if __name__ == "__main__":
 
-        messagebox.showerror(
-            "Actualización",
-            (
-                "No se puede continuar.\n\n"
-                f"{mensaje}\n\n"
-                "Verifique su conexión a Internet "
-                "y vuelva a abrir FacturasVentas."
-            ),
-            parent=self
-        )
+    auth = AuthController()
 
-    # ================================================================
-    # PROGRESO UI
-    # ================================================================
+    ventana = LoginWindow(
+        auth=auth,
+    )
 
-    def _ui_set_progreso(
-        self,
-        pb,
-        lbl_porcentaje,
-        lbl_estado,
-        pct: int,
-        estado: str
-    ):
-
-        try:
-
-            pct = max(
-                0,
-                min(
-                    100,
-                    int(pct)
-                )
-            )
-
-            pb["value"] = pct
-
-            lbl_porcentaje.configure(
-                text=f"{pct}%"
-            )
-
-            lbl_estado.configure(
-                text=estado
-            )
-
-        except Exception:
-            pass
-
-    # ================================================================
-    # ERROR DEL DIÁLOGO
-    # ================================================================
-
-    def _ui_error_progreso(
-        self,
-        dlg,
-        mensaje: str
-    ):
-
-        self._actualizacion_en_proceso = False
-
-        try:
-
-            for widget in dlg.winfo_children():
-                widget.destroy()
-
-            tk.Label(
-                dlg,
-                text="⚠",
-                bg="#ffffff",
-                fg="#dc2626",
-                font=("Segoe UI", 28)
-            ).pack(
-                pady=(18, 4)
-            )
-
-            tk.Label(
-                dlg,
-                text="No se pudo completar la actualización",
-                bg="#ffffff",
-                fg="#0f172a",
-                font=("Segoe UI", 11, "bold")
-            ).pack()
-
-            tk.Label(
-                dlg,
-                text=str(mensaje)[:300],
-                bg="#ffffff",
-                fg="#64748b",
-                font=("Segoe UI", 9),
-                wraplength=380,
-                justify="center"
-            ).pack(
-                padx=18,
-                pady=(6, 14)
-            )
-
-            tk.Button(
-                dlg,
-                text="Cerrar",
-                bg="#f1f5f9",
-                fg="#0f172a",
-                font=("Segoe UI", 9, "bold"),
-                relief="flat",
-                bd=0,
-                cursor="hand2",
-                activebackground="#e2e8f0",
-                command=dlg.destroy
-            ).pack(
-                pady=(0, 14)
-            )
-
-        except Exception:
-            pass
-
-    # ================================================================
-    # CONEXIÓN BD
-    # ================================================================
-
-    def _verificar_conexion(self):
-
-        try:
-
-            ok = self.auth.probar_conexion()
-
-            if ok:
-
-                self.lbl_estado.configure(
-                    text="●  Conectado a la base de datos",
-                    fg=self.COLORS["success"]
-                )
-
-            else:
-
-                self.lbl_estado.configure(
-                    text=(
-                        "⚠  Sin conexión — "
-                        "modo de emergencia disponible"
-                    ),
-                    fg=self.COLORS["warning"]
-                )
-
-        except Exception:
-
-            self.lbl_estado.configure(
-                text=(
-                    "⚠  No se pudo comprobar "
-                    "la conexión"
-                ),
-                fg=self.COLORS["warning"]
-            )
-
-    # ================================================================
-    # MENSAJE
-    # ================================================================
-
-    def _mostrar_mensaje(
-        self,
-        texto: str,
-        estado: str = "error"
-    ):
-
-        color = self.COLORS["error"]
-
-        if estado == "ok":
-            color = self.COLORS["success"]
-
-        elif estado == "info":
-            color = self.COLORS["btn_bg"]
-
-        self.lbl_mensaje.configure(
-            text=texto,
-            fg=color
-        )
-
-        if self._msg_job:
-
-            try:
-                self.after_cancel(
-                    self._msg_job
-                )
-            except Exception:
-                pass
-
-        self._msg_job = self.after(
-            5000,
-            lambda:
-            self.lbl_mensaje.configure(
-                text=""
-            )
-        )
-
-    # ================================================================
-    # LOGIN
-    # ================================================================
-
-    def _on_login_click(self):
-
-        # ============================================================
-        # SEGURIDAD:
-        # JAMÁS PERMITIR LOGIN SIN HABER VERIFICADO ACTUALIZACIÓN
-        # ============================================================
-
-        if not self._actualizacion_verificada:
-
-            self._mostrar_mensaje(
-                "Debe completarse la actualización antes de iniciar sesión.",
-                "error"
-            )
-
-            return
-
-        if self._actualizacion_en_proceso:
-
-            self._mostrar_mensaje(
-                "La actualización está en proceso. Espere...",
-                "info"
-            )
-
-            return
-
-        if self._login_en_proceso:
-            return
-
-        username = self.entry_usuario.get().strip()
-        password = self.entry_password.get()
-
-        if not username or not password:
-
-            self._mostrar_mensaje(
-                "Debe ingresar usuario y contraseña",
-                "error"
-            )
-
-            if not username:
-                self._animar_error(
-                    self._user_frame
-                )
-
-            if not password:
-                self._animar_error(
-                    self._pass_frame
-                )
-
-            return
-
-        self._login_en_proceso = True
-
-        self.btn_login.configure(
-            state="disabled",
-            text="AUTENTICANDO..."
-        )
-
-        self.update_idletasks()
-
-        self.after(
-            50,
-            lambda:
-            self._procesar_login(
-                username,
-                password
-            )
-        )
-
-    # ================================================================
-    # PROCESAR LOGIN
-    # ================================================================
-
-    def _procesar_login(
-        self,
-        username: str,
-        password: str
-    ):
-
-        try:
-
-            resultado = self.auth.autenticar(
-                username,
-                password
-            )
-
-            if resultado["exito"]:
-
-                self._mostrar_mensaje(
-                    resultado["mensaje"],
-                    "ok"
-                )
-
-                self.after(
-                    400,
-                    lambda:
-                    self._finalizar_login(
-                        resultado["usuario"]
-                    )
-                )
-
-            else:
-
-                self._login_en_proceso = False
-
-                self._mostrar_mensaje(
-                    resultado["mensaje"],
-                    "error"
-                )
-
-                self.btn_login.configure(
-                    state="normal",
-                    text="INICIAR SESIÓN"
-                )
-
-                self._animar_error(
-                    self._user_frame
-                )
-
-                self._animar_error(
-                    self._pass_frame
-                )
-
-        except Exception as e:
-
-            self._login_en_proceso = False
-
-            self._mostrar_mensaje(
-                f"Error al iniciar sesión: {e}",
-                "error"
-            )
-
-            self.btn_login.configure(
-                state="normal",
-                text="INICIAR SESIÓN"
-            )
-
-    # ================================================================
-    # FINALIZAR LOGIN
-    # ================================================================
-
-    def _finalizar_login(
-        self,
-        usuario: Dict[str, Any]
-    ):
-
-        if self._cerrando:
-            return
-
-        self.withdraw()
-
-        try:
-
-            self.on_login_success(
-                usuario
-            )
-
-        finally:
-
-            try:
-                self.destroy()
-            except Exception:
-                pass
-
-    # ================================================================
-    # ANIMACIÓN ERROR
-    # ================================================================
-
-    def _animar_error(
-        self,
-        widget: tk.Widget
-    ):
-
-        try:
-
-            dx = 6
-            repeticiones = 3
-
-            original_x = (
-                widget.winfo_x()
-                if hasattr(widget, "winfo_x")
-                else 0
-            )
-
-            for i in range(
-                repeticiones * 2
-            ):
-
-                offset = (
-                    dx
-                    if i % 2 == 0
-                    else -dx
-                )
-
-                delay = (
-                    30 + i * 10
-                )
-
-                self.after(
-                    delay,
-                    lambda
-                    w=widget,
-                    ox=original_x,
-                    o=offset:
-                    self._shake_widget(
-                        w,
-                        ox,
-                        o
-                    )
-                )
-
-            self.after(
-                30
-                + (repeticiones * 2) * 10
-                + 20,
-                lambda
-                w=widget,
-                ox=original_x:
-                self._shake_widget(
-                    w,
-                    ox,
-                    0
-                )
-            )
-
-        except Exception:
-            pass
-
-    # ================================================================
-    # SHAKE
-    # ================================================================
-
-    def _shake_widget(
-        self,
-        w: tk.Widget,
-        orig_x: int,
-        offset: int
-    ):
-
-        try:
-
-            parent = w.master
-            info = w.place_info()
-
-            if "x" in info:
-
-                new_x = (
-                    orig_x
-                    + offset
-                )
-
-                w.place_configure(
-                    x=new_x
-                )
-
-                parent.update_idletasks()
-
-        except Exception:
-            pass
-
-    # ================================================================
-    # CIERRE DE VENTANA
-    # ================================================================
-
-    def destroy(self):
-
-        self._cerrando = True
-
-        try:
-            self.auth.cerrar_sesion()
-        except Exception:
-            pass
-
-        try:
-            super().destroy()
-        except Exception:
-            pass
+    ventana.mainloop()

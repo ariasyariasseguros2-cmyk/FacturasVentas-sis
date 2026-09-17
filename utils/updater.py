@@ -1,619 +1,915 @@
-import json
 import os
 import sys
+import ssl
+import json
+import time
 import shutil
 import hashlib
 import zipfile
+import tempfile
 import subprocess
-import ssl
 import urllib.request
 import urllib.error
-import urllib.parse
-import webbrowser
-import traceback
-import time
-from typing import Optional, Dict, Any, Tuple, Callable
+import ctypes
+from typing import Optional, Dict, Any, Callable
 
 
 # ============================================================
 # CONFIGURACIÓN
 # ============================================================
 
-APP_VERSION: str = "1.0.0"
+APP_NAME = "FacturasVentas-SIS"
 
-VERSION_URL: str = (
+# ------------------------------------------------------------
+# IMPORTANTE:
+#
+# Para probar:
+#   EXE actual = 1.0.0
+#   servidor   = 1.0.1
+#
+# Cuando compiles la nueva versión:
+#   APP_VERSION = "1.0.1"
+# ------------------------------------------------------------
+
+APP_VERSION = "1.0.1"
+
+VERSION_URL = (
     "https://www.aasnet.tech/updates/version.json"
 )
 
-APP_EXE_NAME: str = "main.exe"
+APP_EXE_NAME = "main.exe"
 
-ALLOW_INSECURE_SSL_FALLBACK: bool = True
+REQUEST_TIMEOUT = 30
 
-DEBUG: bool = True
+# Permitir segundo intento SSL sin validación
+ALLOW_INSECURE_SSL = True
 
 
 # ============================================================
 # LOG
 # ============================================================
 
-def obtener_directorio_log() -> str:
+def _log(mensaje: str) -> None:
+
     try:
-        return obtener_directorio_ejecutable()
-    except Exception:
-        return os.getcwd()
 
-
-def obtener_ruta_log() -> str:
-    return os.path.join(
-        obtener_directorio_log(),
-        "updater.log"
-    )
-
-
-def log(mensaje: str):
-    """
-    Muestra el mensaje en consola y lo guarda en updater.log.
-    """
-
-    texto = (
-        f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
-        f"{mensaje}"
-    )
-
-    # Consola
-    try:
-        print(texto, flush=True)
-    except Exception:
-        pass
-
-    # Archivo
-    try:
-        with open(
-            obtener_ruta_log(),
-            "a",
-            encoding="utf-8"
-        ) as f:
-            f.write(texto + "\n")
-    except Exception:
-        pass
-
-
-def log_error(mensaje: str, exc: Optional[Exception] = None):
-    log("ERROR: " + mensaje)
-
-    if exc is not None:
-        log(
-            f"TIPO ERROR: {type(exc).__name__}"
-        )
-        log(
-            f"DETALLE ERROR: {exc}"
+        print(
+            f"[UPDATER] {mensaje}",
+            flush=True
         )
 
-    if DEBUG:
-        try:
-            traceback.print_exc()
-
-            with open(
-                obtener_ruta_log(),
-                "a",
-                encoding="utf-8"
-            ) as f:
-                f.write(
-                    traceback.format_exc()
-                    + "\n"
-                )
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 # ============================================================
-# SSL
+# DETECTAR EXE
+# ============================================================
+
+def es_exe() -> bool:
+
+    return bool(
+        getattr(
+            sys,
+            "frozen",
+            False
+        )
+    )
+
+
+# ============================================================
+# DIRECTORIO DEL EJECUTABLE
+# ============================================================
+
+def obtener_directorio_ejecutable() -> str:
+
+    """
+    EXE:
+
+        C:\\Program Files\\FacturasVentas-SIS
+
+    Python:
+
+        carpeta donde se ejecuta el proyecto
+    """
+
+    try:
+
+        if es_exe():
+
+            return os.path.dirname(
+                os.path.abspath(
+                    sys.executable
+                )
+            )
+
+        return os.path.dirname(
+            os.path.abspath(
+                sys.argv[0]
+            )
+        )
+
+    except Exception:
+
+        return os.getcwd()
+
+
+# ============================================================
+# DIRECTORIO SEGURO DE ACTUALIZACIONES
+# ============================================================
+
+def obtener_directorio_updates() -> str:
+
+    """
+    NUNCA usar Program Files para descargas.
+
+    Se utiliza:
+
+    C:\\Users\\USUARIO\\AppData\\Local\\
+        FacturasVentas-SIS\\_updates
+    """
+
+    local_app_data = os.environ.get(
+        "LOCALAPPDATA"
+    )
+
+    if not local_app_data:
+
+        local_app_data = os.path.expanduser(
+            "~"
+        )
+
+    ruta = os.path.join(
+        local_app_data,
+        APP_NAME,
+        "_updates"
+    )
+
+    os.makedirs(
+        ruta,
+        exist_ok=True
+    )
+
+    _log(
+        f"DIRECTORIO UPDATES: {ruta}"
+    )
+
+    return ruta
+
+
+# ============================================================
+# CREAR CONTEXTO SSL
 # ============================================================
 
 def _crear_contexto_ssl(
     inseguro: bool = False
-) -> Optional[ssl.SSLContext]:
-
-    log(
-        f"Creando contexto SSL. inseguro={inseguro}"
-    )
-
-    if inseguro:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        return ctx
-
-    return None
-
-
-# ============================================================
-# CAMBIAR HTTP / HTTPS
-# ============================================================
-
-def _alternar_http(url: str) -> str:
+):
 
     try:
-        p = urllib.parse.urlparse(url)
 
-        if p.scheme == "https":
-            return p._replace(
-                scheme="http"
-            ).geturl()
+        if inseguro:
 
-        if p.scheme == "http":
-            return p._replace(
-                scheme="https"
-            ).geturl()
+            return ssl._create_unverified_context()
+
+        return ssl.create_default_context()
 
     except Exception as e:
-        log_error(
-            "Error alternando HTTP/HTTPS",
-            e
+
+        _log(
+            f"Error creando SSL: {e}"
         )
 
-    return url
+        return ssl._create_unverified_context()
 
 
 # ============================================================
 # HTTP GET
 # ============================================================
 
-def _http_get_raw(
+def _http_get(
     url: str,
-    timeout: int,
-    extra_headers: Optional[Dict[str, str]] = None,
-    salida_binaria: bool = False,
+    timeout: int = REQUEST_TIMEOUT,
+    destino: Optional[str] = None,
     progress_cb: Optional[
         Callable[[int, int], None]
     ] = None,
-    destino_archivo: Optional[str] = None,
 ) -> Dict[str, Any]:
 
-    log("=" * 70)
-    log("INICIO HTTP GET")
-    log(f"URL: {url}")
-    log(f"TIMEOUT: {timeout}")
-    log(f"DESTINO: {destino_archivo}")
-
-    resultados: Dict[str, Any] = {
-        "ok": False,
-        "data": None,
-        "ruta": None,
-        "bytes_descargados": 0,
-        "bytes_totales": 0,
-        "sha256": None,
-        "url_final": None,
-        "errores": [],
-    }
+    _log("=" * 70)
+    _log("INICIO HTTP GET")
+    _log(f"URL: {url}")
+    _log(f"TIMEOUT: {timeout}")
+    _log(f"DESTINO: {destino}")
 
     headers = {
-        "User-Agent": (
-            f"FacturasVentas-SIS/{APP_VERSION}"
-        ),
-        "Accept": "*/*",
-        "Cache-Control": "no-cache",
-        "Pragma": "no-cache",
+
+        "User-Agent":
+            f"FacturasVentas-SIS/{APP_VERSION}",
+
+        "Accept":
+            "*/*",
+
+        "Cache-Control":
+            "no-cache, no-store, must-revalidate",
+
+        "Pragma":
+            "no-cache",
+
     }
 
-    if extra_headers:
-        headers.update(extra_headers)
-
-    log(f"HEADERS: {headers}")
-
-    estrategias = []
-
-    # ========================================================
-    # 1. HTTPS NORMAL
-    # ========================================================
-
-    estrategias.append(
-        (url, None)
+    _log(
+        f"HEADERS: {headers}"
     )
-
-    # ========================================================
-    # 2. HTTPS SIN VALIDACIÓN SSL
-    # ========================================================
-
-    if ALLOW_INSECURE_SSL_FALLBACK:
-        estrategias.append(
-            (
-                url,
-                _crear_contexto_ssl(True)
-            )
-        )
-
-    # ========================================================
-    # 3. HTTP
-    # ========================================================
-
-    url_http = _alternar_http(url)
-
-    if url_http != url:
-
-        estrategias.append(
-            (
-                url_http,
-                None
-            )
-        )
 
     ultimo_error = None
 
-    # ========================================================
-    # EJECUTAR ESTRATEGIAS
-    # ========================================================
+    estrategias = []
 
-    for idx, (u, ctx) in enumerate(
+    if ALLOW_INSECURE_SSL:
+
+        estrategias = [
+
+            (
+                "NORMAL",
+                _crear_contexto_ssl(False)
+            ),
+
+            (
+                "SSL INSEGURO",
+                _crear_contexto_ssl(True)
+            ),
+
+        ]
+
+    else:
+
+        estrategias = [
+
+            (
+                "NORMAL",
+                _crear_contexto_ssl(False)
+            )
+
+        ]
+
+    for indice, (
+        nombre,
+        contexto
+    ) in enumerate(
         estrategias,
         start=1
     ):
 
-        log("-" * 70)
-
-        log(
-            f"ESTRATEGIA {idx}/{len(estrategias)}"
-        )
-
-        log(f"URL: {u}")
-
-        if ctx is None:
-            log("SSL: NORMAL")
-        else:
-            log("SSL: SIN VALIDACIÓN")
-
         try:
 
-            resultados["url_final"] = u
+            _log("-" * 70)
 
-            req = urllib.request.Request(
-                u,
+            _log(
+                f"ESTRATEGIA "
+                f"{indice}/"
+                f"{len(estrategias)}"
+            )
+
+            _log(
+                f"URL: {url}"
+            )
+
+            _log(
+                f"SSL: {nombre}"
+            )
+
+            _log(
+                "Ejecutando urllib.request.urlopen()..."
+            )
+
+            request = urllib.request.Request(
+                url,
                 headers=headers,
                 method="GET"
             )
 
-            kwargs = {
-                "timeout": timeout
-            }
-
-            if ctx is not None:
-                kwargs["context"] = ctx
-
-            log("Ejecutando urllib.request.urlopen()...")
-
             with urllib.request.urlopen(
-                req,
-                **kwargs
-            ) as resp:
+                request,
+                timeout=timeout,
+                context=contexto
+            ) as response:
 
-                log(
-                    f"HTTP STATUS: {resp.status}"
+                status = getattr(
+                    response,
+                    "status",
+                    response.getcode()
                 )
 
-                log(
-                    f"RESPONSE URL: {resp.geturl()}"
+                response_url = response.geturl()
+
+                _log(
+                    f"HTTP STATUS: {status}"
                 )
 
-                log(
-                    f"HEADERS RESPONSE: {dict(resp.headers)}"
+                _log(
+                    f"RESPONSE URL: "
+                    f"{response_url}"
                 )
 
-                total_bytes = int(
-                    resp.headers.get(
-                        "Content-Length"
-                    ) or 0
-                )
+                if (
+                    status < 200
+                    or status >= 300
+                ):
 
-                resultados[
-                    "bytes_totales"
-                ] = total_bytes
-
-                log(
-                    f"CONTENT-LENGTH: {total_bytes}"
-                )
-
-                # ==================================================
-                # GUARDAR ARCHIVO
-                # ==================================================
-
-                if destino_archivo:
-
-                    directorio = os.path.dirname(
-                        destino_archivo
+                    raise RuntimeError(
+                        f"HTTP {status}"
                     )
 
-                    if directorio:
-                        os.makedirs(
-                            directorio,
-                            exist_ok=True
-                        )
+                # ------------------------------------------------
+                # DESCARGA A ARCHIVO
+                # ------------------------------------------------
 
-                    log(
-                        f"Guardando archivo en: "
-                        f"{destino_archivo}"
+                if destino:
+
+                    return _guardar_descarga(
+                        response,
+                        destino,
+                        progress_cb
                     )
 
-                    descargado = 0
+                # ------------------------------------------------
+                # DATOS EN MEMORIA
+                # ------------------------------------------------
 
-                    with open(
-                        destino_archivo,
-                        "wb"
-                    ) as out:
+                data = response.read()
 
-                        while True:
-
-                            chunk = resp.read(
-                                64 * 1024
-                            )
-
-                            if not chunk:
-                                break
-
-                            out.write(chunk)
-
-                            descargado += len(
-                                chunk
-                            )
-
-                            resultados[
-                                "bytes_descargados"
-                            ] = descargado
-
-                            if (
-                                progress_cb
-                                and total_bytes
-                            ):
-                                try:
-                                    progress_cb(
-                                        descargado,
-                                        total_bytes
-                                    )
-                                except Exception as e:
-                                    log_error(
-                                        "Error en progress_cb",
-                                        e
-                                    )
-
-                    log(
-                        f"DESCARGA COMPLETADA: "
-                        f"{descargado} bytes"
-                    )
-
-                    resultados["ok"] = True
-
-                    resultados[
-                        "ruta"
-                    ] = destino_archivo
-
-                    resultados[
-                        "sha256"
-                    ] = _sha256_archivo(
-                        destino_archivo
-                    )
-
-                    log(
-                        f"SHA256: "
-                        f"{resultados['sha256']}"
-                    )
-
-                    return resultados
-
-                # ==================================================
-                # DEVOLVER DATA
-                # ==================================================
-
-                log(
-                    "Leyendo respuesta HTTP..."
+                _log(
+                    f"DATA RECIBIDA: "
+                    f"{len(data)} bytes"
                 )
 
-                raw = resp.read()
+                return {
 
-                resultados["data"] = raw
+                    "ok": True,
 
-                resultados[
-                    "bytes_descargados"
-                ] = len(raw)
+                    "status":
+                        status,
 
-                resultados["ok"] = True
+                    "url":
+                        response_url,
 
-                log(
-                    f"DATA RECIBIDA: {len(raw)} bytes"
-                )
+                    "data":
+                        data,
 
-                return resultados
-
-        except urllib.error.HTTPError as e:
-
-            ultimo_error = (
-                f"HTTPError "
-                f"status={e.code} "
-                f"reason={e.reason}"
-            )
-
-            log_error(
-                f"HTTP ERROR en estrategia {idx}",
-                e
-            )
-
-            resultados[
-                "errores"
-            ].append(
-                f"[{idx}] {ultimo_error}"
-            )
-
-        except urllib.error.URLError as e:
-
-            ultimo_error = (
-                f"URLError: {e.reason}"
-            )
-
-            log_error(
-                f"URL ERROR en estrategia {idx}",
-                e
-            )
-
-            resultados[
-                "errores"
-            ].append(
-                f"[{idx}] {ultimo_error}"
-            )
-
-        except ssl.SSLError as e:
-
-            ultimo_error = (
-                f"SSLError: {e}"
-            )
-
-            log_error(
-                f"SSL ERROR en estrategia {idx}",
-                e
-            )
-
-            resultados[
-                "errores"
-            ].append(
-                f"[{idx}] {ultimo_error}"
-            )
-
-        except OSError as e:
-
-            ultimo_error = (
-                f"OSError: {e}"
-            )
-
-            log_error(
-                f"OS ERROR en estrategia {idx}",
-                e
-            )
-
-            resultados[
-                "errores"
-            ].append(
-                f"[{idx}] {ultimo_error}"
-            )
+                }
 
         except Exception as e:
 
-            ultimo_error = (
-                f"{type(e).__name__}: {e}"
+            ultimo_error = e
+
+            _log(
+                f"ERROR ESTRATEGIA "
+                f"{indice}: {e}"
             )
 
-            log_error(
-                f"ERROR GENERAL en estrategia {idx}",
-                e
-            )
+    return {
 
-            resultados[
-                "errores"
-            ].append(
-                f"[{idx}] {ultimo_error}"
-            )
+        "ok": False,
 
-    log("=" * 70)
+        "error":
+            str(
+                ultimo_error
+                or
+                "Error HTTP desconocido."
+            ),
 
-    log(
-        "TODAS LAS ESTRATEGIAS HTTP FALLARON"
-    )
-
-    resultados[
-        "errores"
-    ].append(
-        f"URL original: {url}"
-    )
-
-    return resultados
+    }
 
 
 # ============================================================
-# SHA256
+# GUARDAR DESCARGA
 # ============================================================
 
-def _sha256_archivo(
-    ruta: str,
+def _guardar_descarga(
+    response,
+    destino: str,
     progress_cb: Optional[
         Callable[[int, int], None]
     ] = None,
-) -> str:
-
-    log(
-        f"Calculando SHA256: {ruta}"
-    )
-
-    h = hashlib.sha256()
-
-    if not os.path.exists(ruta):
-
-        log(
-            "SHA256: archivo no existe"
-        )
-
-        return ""
-
-    total = os.path.getsize(ruta)
-
-    leido = 0
-
-    with open(
-        ruta,
-        "rb"
-    ) as f:
-
-        while True:
-
-            buf = f.read(
-                64 * 1024
-            )
-
-            if not buf:
-                break
-
-            h.update(buf)
-
-            leido += len(buf)
-
-            if (
-                progress_cb
-                and total
-            ):
-                try:
-                    progress_cb(
-                        leido,
-                        total
-                    )
-                except Exception:
-                    pass
-
-    resultado = h.hexdigest()
-
-    log(
-        f"SHA256 RESULTADO: {resultado}"
-    )
-
-    return resultado
-
-
-# ============================================================
-# VERSION
-# ============================================================
-
-def _parse_version(
-    version_str: str
-) -> Tuple[int, ...]:
+) -> Dict[str, Any]:
 
     try:
 
-        return tuple(
-            int(x)
-            for x in version_str.strip().split(".")
+        carpeta = os.path.dirname(
+            os.path.abspath(
+                destino
+            )
         )
+
+        # ----------------------------------------------------
+        # CREAR CARPETA
+        # ----------------------------------------------------
+
+        os.makedirs(
+            carpeta,
+            exist_ok=True
+        )
+
+        _log(
+            f"CARPETA DESCARGA: {carpeta}"
+        )
+
+        # ----------------------------------------------------
+        # CONTENT LENGTH
+        # ----------------------------------------------------
+
+        total = 0
+
+        try:
+
+            total = int(
+                response.headers.get(
+                    "Content-Length",
+                    "0"
+                )
+            )
+
+        except Exception:
+
+            total = 0
+
+        _log(
+            f"CONTENT-LENGTH: {total}"
+        )
+
+        # ----------------------------------------------------
+        # ARCHIVO TEMPORAL
+        # ----------------------------------------------------
+
+        temporal = (
+            destino
+            + ".download"
+        )
+
+        recibidos = 0
+
+        # ----------------------------------------------------
+        # DESCARGAR
+        # ----------------------------------------------------
+
+        with open(
+            temporal,
+            "wb"
+        ) as archivo:
+
+            while True:
+
+                bloque = response.read(
+                    1024 * 1024
+                )
+
+                if not bloque:
+
+                    break
+
+                archivo.write(
+                    bloque
+                )
+
+                recibidos += len(
+                    bloque
+                )
+
+                if progress_cb:
+
+                    try:
+
+                        progress_cb(
+                            recibidos,
+                            total
+                        )
+
+                    except Exception:
+
+                        pass
+
+        # ----------------------------------------------------
+        # VALIDAR ARCHIVO
+        # ----------------------------------------------------
+
+        if not os.path.exists(
+            temporal
+        ):
+
+            raise RuntimeError(
+                "No se creó el archivo descargado."
+            )
+
+        tamano = os.path.getsize(
+            temporal
+        )
+
+        if tamano <= 0:
+
+            raise RuntimeError(
+                "El archivo descargado está vacío."
+            )
+
+        _log(
+            f"ARCHIVO TEMPORAL: {temporal}"
+        )
+
+        _log(
+            f"TAMAÑO DESCARGADO: {tamano} bytes"
+        )
+
+        # ----------------------------------------------------
+        # REEMPLAZAR DESTINO
+        # ----------------------------------------------------
+
+        if os.path.exists(
+            destino
+        ):
+
+            try:
+
+                os.remove(
+                    destino
+                )
+
+            except Exception:
+
+                pass
+
+        os.replace(
+            temporal,
+            destino
+        )
+
+        _log(
+            f"DESCARGA COMPLETADA: {destino}"
+        )
+
+        _log(
+            f"TAMAÑO FINAL: "
+            f"{os.path.getsize(destino)} bytes"
+        )
+
+        return {
+
+            "ok": True,
+
+            "path":
+                destino,
+
+            "size":
+                os.path.getsize(
+                    destino
+                ),
+
+        }
 
     except Exception as e:
 
-        log_error(
-            f"No se pudo interpretar versión: "
-            f"{version_str}",
-            e
+        try:
+
+            if os.path.exists(
+                temporal
+            ):
+
+                os.remove(
+                    temporal
+                )
+
+        except Exception:
+
+            pass
+
+        _log(
+            f"ERROR GUARDANDO DESCARGA: {e}"
         )
+
+        return {
+
+            "ok": False,
+
+            "error":
+                str(e),
+
+        }
+
+
+# ============================================================
+# CONSULTAR VERSIÓN REMOTA
+# ============================================================
+
+def consultar_version_remota(
+    timeout: int = 15
+) -> Dict[str, Any]:
+
+    _log("=" * 70)
+    _log("CONSULTANDO VERSION REMOTA")
+
+    _log(
+        f"VERSION LOCAL: "
+        f"{APP_VERSION}"
+    )
+
+    _log(
+        f"VERSION URL: "
+        f"{VERSION_URL}"
+    )
+
+    _log("=" * 70)
+
+    resultado = _http_get(
+        VERSION_URL,
+        timeout=timeout
+    )
+
+    if not resultado.get(
+        "ok"
+    ):
+
+        return {
+
+            "ok": False,
+
+            "error":
+                resultado.get(
+                    "error",
+                    "No se pudo consultar la versión remota."
+                )
+
+        }
+
+    try:
+
+        data = resultado.get(
+            "data",
+            b""
+        )
+
+        texto = data.decode(
+            "utf-8-sig"
+        )
+
+        _log(
+            f"VERSION.JSON recibida: "
+            f"{len(data)} bytes"
+        )
+
+        _log(
+            "CONTENIDO VERSION.JSON:"
+        )
+
+        _log(
+            texto
+        )
+
+        remoto = json.loads(
+            texto
+        )
+
+        # ----------------------------------------------------
+        # DATOS
+        # ----------------------------------------------------
+
+        version_remota = str(
+            remoto.get(
+                "version",
+                ""
+            )
+        ).strip()
+
+        strategy = str(
+            remoto.get(
+                "strategy",
+                "zip_patch"
+            )
+        ).strip()
+
+        force_update = bool(
+            remoto.get(
+                "force_update",
+                False
+            )
+        )
+
+        download_url = remoto.get(
+            "download_url"
+        )
+
+        patch_url = remoto.get(
+            "patch_url"
+        )
+
+        checksum = remoto.get(
+            "checksum_sha256"
+        )
+
+        if not checksum:
+
+            checksum = None
+
+        file_size = remoto.get(
+            "file_size_bytes",
+            0
+        )
+
+        min_version = str(
+            remoto.get(
+                "min_version_to_patch",
+                "0.0.0"
+            )
+        )
+
+        release_notes = remoto.get(
+            "release_notes",
+            []
+        )
+
+        # ----------------------------------------------------
+        # LOG
+        # ----------------------------------------------------
+
+        _log(
+            f"VERSION REMOTA: "
+            f"{version_remota}"
+        )
+
+        _log(
+            f"DOWNLOAD URL: "
+            f"{download_url}"
+        )
+
+        _log(
+            f"PATCH URL: "
+            f"{patch_url}"
+        )
+
+        _log(
+            f"STRATEGY: "
+            f"{strategy}"
+        )
+
+        _log(
+            f"FORCE UPDATE: "
+            f"{force_update}"
+        )
+
+        _log(
+            f"CHECKSUM: "
+            f"{checksum}"
+        )
+
+        _log(
+            f"FILE SIZE: "
+            f"{file_size}"
+        )
+
+        _log(
+            f"MIN VERSION PATCH: "
+            f"{min_version}"
+        )
+
+        # ----------------------------------------------------
+        # COMPARAR
+        # ----------------------------------------------------
+
+        hay_actualizacion = (
+            comparar_versiones(
+                APP_VERSION,
+                version_remota
+            ) < 0
+        )
+
+        puede_autoaplicar = (
+            comparar_versiones(
+                APP_VERSION,
+                min_version
+            ) >= 0
+        )
+
+        _log(
+            f"ACTUALIZACIÓN DISPONIBLE: "
+            f"{hay_actualizacion}"
+        )
+
+        _log(
+            f"PUEDE AUTOAPLICAR: "
+            f"{puede_autoaplicar}"
+        )
+
+        return {
+
+            "ok": True,
+
+            "hay_actualizacion":
+                hay_actualizacion,
+
+            "version_local":
+                APP_VERSION,
+
+            "version_remota":
+                version_remota,
+
+            "download_url":
+                download_url,
+
+            "patch_url":
+                patch_url,
+
+            "strategy":
+                strategy,
+
+            "force_update":
+                force_update,
+
+            "checksum_sha256":
+                checksum,
+
+            "file_size_bytes":
+                file_size,
+
+            "min_version_to_patch":
+                min_version,
+
+            "puede_autoaplicar":
+                puede_autoaplicar,
+
+            "release_notes":
+                release_notes,
+
+            "notas":
+                release_notes,
+
+            "raw":
+                remoto,
+
+        }
+
+    except Exception as e:
+
+        _log(
+            "ERROR PROCESANDO "
+            f"VERSION.JSON: {e}"
+        )
+
+        return {
+
+            "ok": False,
+
+            "error":
+                "El servidor respondió correctamente, "
+                "pero version.json no es válido: "
+                f"{e}"
+
+        }
+
+
+# ============================================================
+# VERSIONES
+# ============================================================
+
+def _version_tuple(
+    version: str
+):
+
+    try:
+
+        partes = str(
+            version
+        ).strip().split(".")
+
+        valores = []
+
+        for parte in partes:
+
+            numero = ""
+
+            for caracter in parte:
+
+                if caracter.isdigit():
+
+                    numero += caracter
+
+                else:
+
+                    break
+
+            valores.append(
+                int(
+                    numero
+                    or
+                    "0"
+                )
+            )
+
+        while len(valores) < 3:
+
+            valores.append(0)
+
+        return tuple(
+            valores[:3]
+        )
+
+    except Exception:
 
         return (
             0,
@@ -622,468 +918,34 @@ def _parse_version(
         )
 
 
-def version_disponible(
-    local: str,
-    remota: str
-) -> bool:
+def comparar_versiones(
+    version_a: str,
+    version_b: str
+) -> int:
 
-    local_tuple = _parse_version(local)
-    remota_tuple = _parse_version(remota)
+    a = _version_tuple(
+        version_a
+    )
 
-    log(
+    b = _version_tuple(
+        version_b
+    )
+
+    _log(
         f"Comparando versiones: "
-        f"LOCAL={local_tuple} "
-        f"REMOTA={remota_tuple}"
+        f"LOCAL={a} "
+        f"REMOTA={b}"
     )
 
-    return remota_tuple > local_tuple
+    if a < b:
 
+        return -1
 
-# ============================================================
-# RUTAS
-# ============================================================
+    if a > b:
 
-def obtener_ruta_ejecutable() -> str:
+        return 1
 
-    if getattr(
-        sys,
-        "frozen",
-        False
-    ):
-
-        return sys.executable
-
-    return os.path.abspath(
-        sys.argv[0]
-    )
-
-
-def obtener_directorio_ejecutable() -> str:
-
-    return os.path.dirname(
-        obtener_ruta_ejecutable()
-    )
-
-
-def obtener_ruta_app_exe() -> str:
-
-    if getattr(
-        sys,
-        "frozen",
-        False
-    ):
-
-        return sys.executable
-
-    return os.path.join(
-        obtener_directorio_ejecutable(),
-        APP_EXE_NAME
-    )
-
-
-# ============================================================
-# CONSULTAR VERSION REMOTA
-# ============================================================
-
-def consultar_version_remota(
-    url: Optional[str] = None,
-    timeout: int = 10,
-) -> Dict[str, Any]:
-
-    destino = (
-        url
-        or VERSION_URL
-    )
-
-    log("=" * 70)
-    log("CONSULTANDO VERSION REMOTA")
-    log(f"VERSION LOCAL: {APP_VERSION}")
-    log(f"VERSION URL: {destino}")
-
-    resultado: Dict[str, Any] = {
-        "ok": False,
-        "hay_actualizacion": False,
-        "version_remota": None,
-        "version_local": APP_VERSION,
-        "download_url": None,
-        "patch_url": None,
-        "strategy": None,
-        "force_update": False,
-        "checksum_sha256": None,
-        "file_size_bytes": 0,
-        "min_version_to_patch": None,
-        "notas": None,
-        "published_at": None,
-        "puede_autoaplicar": False,
-        "url_version_json_usada": None,
-        "error": None,
-    }
-
-    try:
-
-        http_res = _http_get_raw(
-            destino,
-            timeout=timeout,
-            extra_headers={
-                "Accept": "application/json"
-            }
-        )
-
-        if not http_res["ok"]:
-
-            err_list = (
-                http_res.get(
-                    "errores"
-                )
-                or []
-            )
-
-            log(
-                "ERRORES VERSION.JSON:"
-            )
-
-            for error in err_list:
-                log(
-                    f"  {error}"
-                )
-
-            if err_list:
-                msj = err_list[-1]
-            else:
-                msj = "Error desconocido"
-
-            resultado["error"] = msj
-
-            return resultado
-
-        resultado[
-            "url_version_json_usada"
-        ] = http_res.get(
-            "url_final"
-        )
-
-        raw_bytes = (
-            http_res.get(
-                "data"
-            )
-            or b""
-        )
-
-        log(
-            f"VERSION.JSON recibida: "
-            f"{len(raw_bytes)} bytes"
-        )
-
-        raw = raw_bytes.decode(
-            "utf-8",
-            errors="replace"
-        )
-
-        log(
-            "CONTENIDO VERSION.JSON:"
-        )
-        log(raw)
-
-        try:
-
-            datos = json.loads(
-                raw
-            )
-
-        except json.JSONDecodeError as e:
-
-            log_error(
-                "El version.json no contiene JSON válido",
-                e
-            )
-
-            resultado[
-                "error"
-            ] = (
-                "El archivo de versión remoto "
-                "es inválido (JSON corrupto)"
-            )
-
-            return resultado
-
-        # ==================================================
-        # LEER VERSION.JSON
-        # ==================================================
-
-        version_remota = str(
-            datos.get(
-                "version",
-                ""
-            )
-        ).strip()
-
-        download_url = str(
-            datos.get(
-                "download_url",
-                ""
-            )
-        ).strip() or None
-
-        patch_url = str(
-            datos.get(
-                "patch_url",
-                ""
-            )
-        ).strip() or None
-
-        strategy = str(
-            datos.get(
-                "strategy",
-                ""
-            )
-        ).strip() or None
-
-        force_update = bool(
-            datos.get(
-                "force_update",
-                False
-            )
-        )
-
-        checksum = str(
-            datos.get(
-                "checksum_sha256",
-                ""
-            )
-        ).strip() or None
-
-        try:
-
-            file_size = int(
-                datos.get(
-                    "file_size_bytes"
-                )
-                or 0
-            )
-
-        except Exception:
-
-            file_size = 0
-
-        min_patch = str(
-            datos.get(
-                "min_version_to_patch",
-                ""
-            )
-        ).strip() or None
-
-        notas = (
-            datos.get(
-                "release_notes"
-            )
-            or datos.get(
-                "notes"
-            )
-            or None
-        )
-
-        published_at = str(
-            datos.get(
-                "published_at",
-                ""
-            )
-        ).strip() or None
-
-        # ==================================================
-        # GUARDAR RESULTADOS
-        # ==================================================
-
-        resultado["ok"] = True
-
-        resultado[
-            "version_remota"
-        ] = (
-            version_remota
-            or None
-        )
-
-        resultado[
-            "download_url"
-        ] = download_url
-
-        resultado[
-            "patch_url"
-        ] = patch_url
-
-        resultado[
-            "strategy"
-        ] = strategy
-
-        resultado[
-            "force_update"
-        ] = force_update
-
-        resultado[
-            "checksum_sha256"
-        ] = checksum
-
-        resultado[
-            "file_size_bytes"
-        ] = file_size
-
-        resultado[
-            "min_version_to_patch"
-        ] = min_patch
-
-        resultado[
-            "notas"
-        ] = notas
-
-        resultado[
-            "published_at"
-        ] = published_at
-
-        # ==================================================
-        # MOSTRAR DATOS
-        # ==================================================
-
-        log(
-            f"VERSION REMOTA: {version_remota}"
-        )
-
-        log(
-            f"DOWNLOAD URL: {download_url}"
-        )
-
-        log(
-            f"PATCH URL: {patch_url}"
-        )
-
-        log(
-            f"STRATEGY: {strategy}"
-        )
-
-        log(
-            f"FORCE UPDATE: {force_update}"
-        )
-
-        log(
-            f"CHECKSUM: {checksum}"
-        )
-
-        log(
-            f"FILE SIZE: {file_size}"
-        )
-
-        log(
-            f"MIN VERSION PATCH: {min_patch}"
-        )
-
-        # ==================================================
-        # COMPARAR VERSION
-        # ==================================================
-
-        if (
-            version_remota
-            and version_disponible(
-                APP_VERSION,
-                version_remota
-            )
-        ):
-
-            resultado[
-                "hay_actualizacion"
-            ] = True
-
-            log(
-                "ACTUALIZACIÓN DISPONIBLE"
-            )
-
-        else:
-
-            log(
-                "NO HAY ACTUALIZACIÓN"
-            )
-
-        # ==================================================
-        # VALIDAR PATCH
-        # ==================================================
-
-        if (
-            resultado[
-                "hay_actualizacion"
-            ]
-            and patch_url
-            and strategy == "zip_patch"
-            and getattr(
-                sys,
-                "frozen",
-                False
-            )
-        ):
-
-            cumple_min = True
-
-            if min_patch:
-
-                cumple_min = not (
-                    version_disponible(
-                        APP_VERSION,
-                        min_patch
-                    )
-                )
-
-            resultado[
-                "puede_autoaplicar"
-            ] = cumple_min
-
-            log(
-                f"PUEDE AUTOAPLICAR: "
-                f"{cumple_min}"
-            )
-
-        return resultado
-
-    except Exception as e:
-
-        log_error(
-            "Error inesperado consultando versión",
-            e
-        )
-
-        resultado[
-            "error"
-        ] = (
-            f"Error inesperado: {e}"
-        )
-
-        return resultado
-
-
-# ============================================================
-# ABRIR DESCARGA
-# ============================================================
-
-def abrir_descarga(
-    url: str
-) -> bool:
-
-    log(
-        f"Abriendo navegador: {url}"
-    )
-
-    try:
-
-        webbrowser.open(
-            url,
-            new=2
-        )
-
-        return True
-
-    except Exception as e:
-
-        log_error(
-            "No se pudo abrir el navegador",
-            e
-        )
-
-        return False
+    return 0
 
 
 # ============================================================
@@ -1096,522 +958,547 @@ def descargar_archivo(
     progress_cb: Optional[
         Callable[[int, int], None]
     ] = None,
-    timeout: int = 300,
+    timeout: int = 60
 ) -> Dict[str, Any]:
 
-    log("=" * 70)
-    log("DESCARGANDO ARCHIVO")
-    log(f"URL: {url}")
-    log(f"DESTINO: {destino}")
+    if not url:
 
-    res: Dict[str, Any] = {
-        "ok": False,
-        "ruta": None,
-        "bytes_descargados": 0,
-        "bytes_totales": 0,
-        "sha256": None,
-        "error": None,
-    }
+        return {
 
-    try:
+            "ok": False,
 
-        http_res = _http_get_raw(
-            url,
-            timeout=timeout,
-            progress_cb=progress_cb,
-            destino_archivo=destino
-        )
+            "error":
+                "URL de descarga vacía."
 
-        if not http_res["ok"]:
+        }
 
-            err_list = (
-                http_res.get(
-                    "errores"
-                )
-                or []
-            )
+    _log(
+        f"INICIANDO DESCARGA: {url}"
+    )
 
-            for error in err_list:
-                log(
-                    f"DESCARGA ERROR: {error}"
-                )
+    _log(
+        f"DESTINO: {destino}"
+    )
 
-            if err_list:
-                msj = err_list[-1]
-            else:
-                msj = "Error desconocido"
+    resultado = _http_get(
+        url,
+        timeout=timeout,
+        destino=destino,
+        progress_cb=progress_cb
+    )
 
-            res[
-                "error"
-            ] = msj
-
-            if os.path.exists(destino):
-
-                try:
-                    os.remove(destino)
-                except Exception:
-                    pass
-
-            return res
-
-        res[
-            "ruta"
-        ] = destino
-
-        res[
-            "sha256"
-        ] = (
-            http_res.get(
-                "sha256"
-            )
-            or _sha256_archivo(
-                destino
-            )
-        )
-
-        res[
-            "bytes_descargados"
-        ] = http_res.get(
-            "bytes_descargados",
-            0
-        )
-
-        res[
-            "bytes_totales"
-        ] = http_res.get(
-            "bytes_totales",
-            0
-        )
-
-        res["ok"] = True
-
-        log(
-            "DESCARGA OK"
-        )
-
-        log(
-            f"BYTES: {res['bytes_descargados']}"
-        )
-
-        log(
-            f"SHA256: {res['sha256']}"
-        )
-
-    except Exception as e:
-
-        log_error(
-            "Error de descarga",
-            e
-        )
-
-        res[
-            "error"
-        ] = (
-            f"Error de descarga: {e}"
-        )
-
-        if os.path.exists(destino):
-
-            try:
-                os.remove(destino)
-            except Exception:
-                pass
-
-    return res
+    return resultado
 
 
 # ============================================================
-# EXTRAER ZIP
+# SHA256
 # ============================================================
 
-def extraer_zip(
-    ruta_zip: str,
-    dir_destino: str,
-    progress_cb: Optional[
-        Callable[[int, int], None]
-    ] = None,
+def calcular_sha256(
+    ruta: str
+) -> str:
+
+    sha = hashlib.sha256()
+
+    with open(
+        ruta,
+        "rb"
+    ) as archivo:
+
+        while True:
+
+            bloque = archivo.read(
+                1024 * 1024
+            )
+
+            if not bloque:
+
+                break
+
+            sha.update(
+                bloque
+            )
+
+    return sha.hexdigest().lower()
+
+
+# ============================================================
+# VALIDAR ZIP
+# ============================================================
+
+def validar_zip(
+    ruta_zip: str
 ) -> Dict[str, Any]:
-
-    log("=" * 70)
-    log("EXTRAYENDO ZIP")
-    log(f"ZIP: {ruta_zip}")
-    log(f"DESTINO: {dir_destino}")
-
-    res: Dict[str, Any] = {
-        "ok": False,
-        "dir_destino": dir_destino,
-        "error": None
-    }
 
     try:
 
-        if not os.path.exists(ruta_zip):
+        if not os.path.isfile(
+            ruta_zip
+        ):
 
-            raise FileNotFoundError(
-                f"No existe ZIP: {ruta_zip}"
-            )
+            return {
 
-        os.makedirs(
-            dir_destino,
-            exist_ok=True
-        )
+                "ok": False,
+
+                "error":
+                    "No existe el archivo ZIP."
+
+            }
+
+        if os.path.getsize(
+            ruta_zip
+        ) <= 0:
+
+            return {
+
+                "ok": False,
+
+                "error":
+                    "El ZIP está vacío."
+
+            }
 
         with zipfile.ZipFile(
             ruta_zip,
             "r"
-        ) as zf:
+        ) as z:
 
-            miembros = zf.infolist()
+            # ------------------------------------------------
+            # TEST ZIP
+            # ------------------------------------------------
 
-            total = len(
-                miembros
-            )
+            if z.testzip() is not None:
 
-            log(
-                f"ARCHIVOS EN ZIP: {total}"
-            )
+                return {
 
-            destino_real = os.path.realpath(
-                dir_destino
-            )
+                    "ok": False,
 
-            # =================================================
-            # SEGURIDAD ZIP SLIP
-            # =================================================
+                    "error":
+                        "El ZIP está corrupto."
 
-            for miembro in miembros:
+                }
 
-                nombre = miembro.filename
+            nombres = z.namelist()
 
-                log(
-                    f"VALIDANDO ZIP: {nombre}"
-                )
+            if not nombres:
 
-                ruta_final = os.path.realpath(
-                    os.path.join(
-                        dir_destino,
-                        nombre
-                    )
-                )
+                return {
 
-                if not (
-                    ruta_final == destino_real
-                    or ruta_final.startswith(
-                        destino_real
-                        + os.sep
-                    )
-                ):
+                    "ok": False,
 
-                    raise RuntimeError(
-                        "El ZIP contiene "
-                        "una ruta insegura: "
-                        + nombre
-                    )
+                    "error":
+                        "El ZIP no contiene archivos."
 
-            # =================================================
-            # EXTRAER
-            # =================================================
+                }
 
-            for idx, miembro in enumerate(
-                miembros,
-                start=1
-            ):
+            return {
 
-                log(
-                    f"Extrayendo "
-                    f"{idx}/{total}: "
-                    f"{miembro.filename}"
-                )
+                "ok": True,
 
-                try:
+                "files":
+                    nombres
 
-                    zf.extract(
-                        miembro,
-                        dir_destino
-                    )
+            }
 
-                except Exception as e:
+    except zipfile.BadZipFile:
 
-                    raise RuntimeError(
-                        f"No se pudo extraer "
-                        f"{miembro.filename}: {e}"
-                    )
+        return {
 
-                if (
-                    progress_cb
-                    and total
-                ):
+            "ok": False,
 
-                    try:
+            "error":
+                "El archivo descargado "
+                "no es un ZIP válido."
 
-                        progress_cb(
-                            idx,
-                            total
-                        )
-
-                    except Exception:
-                        pass
-
-        res["ok"] = True
-
-        log(
-            "ZIP EXTRAÍDO CORRECTAMENTE"
-        )
-
-    except zipfile.BadZipFile as e:
-
-        log_error(
-            "ZIP CORRUPTO",
-            e
-        )
-
-        res[
-            "error"
-        ] = (
-            "El archivo ZIP está corrupto"
-        )
+        }
 
     except Exception as e:
 
-        log_error(
-            "Error al extraer ZIP",
-            e
-        )
+        return {
 
-        res[
-            "error"
-        ] = (
-            f"Error al extraer ZIP: {e}"
-        )
+            "ok": False,
 
-    return res
+            "error":
+                str(e)
+
+        }
 
 
 # ============================================================
-# GENERAR BAT
+# BUSCAR MAIN.EXE DENTRO DEL ZIP
 # ============================================================
 
-def _generar_script_actualizacion(
-    ruta_app_vieja: str,
-    dir_extraccion: str,
-    ruta_app_nueva: str,
-) -> str:
-    """
-    Genera el BAT externo encargado de reemplazar la aplicación.
+def _buscar_main_en_zip(
+    nombres
+) -> Optional[str]:
 
-    El BAT se ejecuta después de que el proceso principal
-    haya terminado.
-    """
+    # --------------------------------------------------------
+    # CASO 1:
+    #
+    # main.exe
+    # --------------------------------------------------------
 
-    log("=" * 70)
-    log("GENERANDO SCRIPT BAT")
+    for nombre in nombres:
 
-    ruta_app_vieja = os.path.abspath(ruta_app_vieja)
-    dir_extraccion = os.path.abspath(dir_extraccion)
-    ruta_app_nueva = os.path.abspath(ruta_app_nueva)
+        limpio = nombre.replace(
+            "\\",
+            "/"
+        ).strip("/")
 
-    dir_app = os.path.dirname(ruta_app_vieja)
-    nombre_bat = "_update_helper.bat"
-    ruta_bat = os.path.join(dir_app, nombre_bat)
+        if (
+            limpio.lower()
+            ==
+            APP_EXE_NAME.lower()
+        ):
 
-    nombre_exe = os.path.basename(ruta_app_vieja)
+            return nombre
 
-    log(f"DIR APP: {dir_app}")
-    log(f"DIR PATCH: {dir_extraccion}")
-    log(f"EXE VIEJO: {ruta_app_vieja}")
-    log(f"EXE NUEVO: {ruta_app_nueva}")
-    log(f"BAT: {ruta_bat}")
+    # --------------------------------------------------------
+    # CASO 2:
+    #
+    # carpeta/main.exe
+    # --------------------------------------------------------
 
-    contenido = f"""@echo off
-setlocal EnableExtensions DisableDelayedExpansion
+    for nombre in nombres:
 
-title FacturasVentas - Actualizando
+        limpio = nombre.replace(
+            "\\",
+            "/"
+        ).strip("/")
 
-echo.
-echo ============================================================
-echo          FACTURASVENTAS - ACTUALIZACION
-echo ============================================================
-echo.
+        if (
+            os.path.basename(
+                limpio
+            ).lower()
+            ==
+            APP_EXE_NAME.lower()
+        ):
 
-set "DIR_APP={dir_app}"
-set "DIR_PATCH={dir_extraccion}"
-set "EXE_OLD={ruta_app_vieja}"
-set "EXE_NEW={ruta_app_nueva}"
-set "RELAUNCH={os.path.join(dir_app, nombre_exe)}"
-set "SELF={ruta_bat}"
-set "EXE_NAME={nombre_exe}"
+            return nombre
 
-echo [1/8] Esperando unos segundos...
-timeout /t 2 /nobreak >nul
-
-echo.
-echo [2/8] Verificando archivos del parche...
-echo.
-
-if not exist "%DIR_PATCH%" (
-    echo [ERROR] La carpeta del parche NO existe:
-    echo %DIR_PATCH%
-    goto error
-)
-
-if not exist "%EXE_NEW%" (
-    echo [ERROR] El nuevo ejecutable NO existe:
-    echo %EXE_NEW%
-    goto error
-)
-
-echo.
-echo Parche encontrado correctamente.
-echo.
-
-echo [3/8] Cerrando aplicacion anterior...
-echo.
-
-taskkill /F /IM "%EXE_NAME%" >nul 2>&1
-
-echo Esperando que termine completamente el proceso...
-echo.
-
-:WAIT_PROCESS
-
-tasklist /FI "IMAGENAME eq %EXE_NAME%" 2>NUL | find /I "%EXE_NAME%" >NUL
-
-if not errorlevel 1 (
-    echo La aplicacion todavia esta ejecutandose...
-    timeout /t 1 /nobreak >nul
-    goto WAIT_PROCESS
-)
-
-echo.
-echo Aplicacion cerrada correctamente.
-echo.
-
-echo [4/8] Preparando carpeta de respaldo...
-echo.
-
-if exist "%DIR_APP%\\_old_version" (
-    rmdir /S /Q "%DIR_APP%\\_old_version" >nul 2>&1
-)
-
-mkdir "%DIR_APP%\\_old_version" >nul 2>&1
-
-echo.
-echo [5/8] Copiando archivos nuevos...
-echo.
-
-xcopy "%DIR_PATCH%\\*.*" "%DIR_APP%\\" /E /H /C /I /Y
-
-if errorlevel 1 (
-    echo.
-    echo ============================================================
-    echo [ERROR] ERROR COPIANDO LOS ARCHIVOS
-    echo ============================================================
-    echo.
-    goto error
-)
-
-echo.
-echo Archivos copiados correctamente.
-echo.
-
-echo [6/8] Verificando nueva aplicacion...
-echo.
-
-if not exist "%RELAUNCH%" (
-    echo [ERROR] No se encontro:
-    echo %RELAUNCH%
-    goto error
-)
-
-echo.
-echo Ejecutable nuevo encontrado.
-echo.
-
-echo [7/8] Actualizacion completada.
-echo.
-
-echo ============================================================
-echo          ACTUALIZACION EXITOSA
-echo ============================================================
-echo.
-
-echo Iniciando nueva version...
-
-timeout /t 2 /nobreak >nul
-
-start "" "%RELAUNCH%" --post-update
-
-echo.
-echo Nueva version iniciada.
-echo.
-
-timeout /t 3 /nobreak >nul
-
-echo [8/8] Limpiando archivos temporales...
-echo.
-
-if exist "%DIR_PATCH%" (
-    rmdir /S /Q "%DIR_PATCH%" >nul 2>&1
-)
-
-echo.
-echo Eliminando actualizador temporal...
-echo.
-
-del /F /Q "%SELF%" >nul 2>&1
-
-exit /b 0
+    return None
 
 
-:error
+# ============================================================
+# CREAR SCRIPT POWERSHELL
+# ============================================================
 
-echo.
-echo ============================================================
-echo              ACTUALIZACION FALLIDA
-echo ============================================================
-echo.
-echo El actualizador NO se eliminara para poder revisar el error.
-echo.
-echo Carpeta APP:
-echo %DIR_APP%
-echo.
-echo Carpeta PATCH:
-echo %DIR_PATCH%
-echo.
-echo Ejecutable nuevo:
-echo %EXE_NEW%
-echo.
-echo.
-echo Presiona una tecla para cerrar esta ventana...
-pause >nul
-
-exit /b 1
-"""
+def _crear_script_actualizador(
+    ruta_zip: str,
+    dir_app: str
+) -> Dict[str, Any]:
 
     try:
+
+        # ----------------------------------------------------
+        # MUY IMPORTANTE
+        #
+        # El script se guarda en LOCALAPPDATA.
+        #
+        # NO en Program Files.
+        # ----------------------------------------------------
+
+        updates_dir = (
+            obtener_directorio_updates()
+        )
+
+        script_path = os.path.join(
+            updates_dir,
+            "apply_update.ps1"
+        )
+
+        pid_actual = os.getpid()
+
+        zip_ps = (
+            os.path.abspath(
+                ruta_zip
+            ).replace(
+                "'",
+                "''"
+            )
+        )
+
+        app_ps = (
+            os.path.abspath(
+                dir_app
+            ).replace(
+                "'",
+                "''"
+            )
+        )
+
+        exe_ps = (
+            os.path.abspath(
+                os.path.join(
+                    dir_app,
+                    APP_EXE_NAME
+                )
+            ).replace(
+                "'",
+                "''"
+            )
+        )
+
+        # ----------------------------------------------------
+        # POWERSHELL
+        # ----------------------------------------------------
+
+        script = f'''$ErrorActionPreference = "Stop"
+
+$ZipPath = '{zip_ps}'
+$AppDir = '{app_ps}'
+$ExePath = '{exe_ps}'
+$PidToWait = {pid_actual}
+
+$TempDir = Join-Path `
+    $env:TEMP `
+    "FacturasVentas-SIS-update-$PidToWait"
+
+$ExtractDir = Join-Path `
+    $TempDir `
+    "extract"
+
+Write-Host "=========================================="
+Write-Host "FACTURASVENTAS-SIS ACTUALIZADOR"
+Write-Host "=========================================="
+
+Write-Host "ZIP:"
+Write-Host $ZipPath
+
+Write-Host "APP:"
+Write-Host $AppDir
+
+Write-Host "EXE:"
+Write-Host $ExePath
+
+Write-Host ""
+Write-Host "Esperando proceso principal..."
+
+# ------------------------------------------------------------
+# ESPERAR A QUE CIERRE EL EXE
+# ------------------------------------------------------------
+
+for ($i = 0; $i -lt 120; $i++) {{
+
+    $proc = Get-Process `
+        -Id $PidToWait `
+        -ErrorAction SilentlyContinue
+
+    if ($null -eq $proc) {{
+
+        break
+    }}
+
+    Start-Sleep `
+        -Milliseconds 500
+}}
+
+Write-Host "Proceso principal cerrado."
+
+Start-Sleep `
+    -Seconds 2
+
+# ------------------------------------------------------------
+# VALIDAR ZIP
+# ------------------------------------------------------------
+
+if (-not (Test-Path -LiteralPath $ZipPath)) {{
+
+    throw "No existe el ZIP: $ZipPath"
+}}
+
+# ------------------------------------------------------------
+# CREAR TEMPORAL
+# ------------------------------------------------------------
+
+New-Item `
+    -ItemType Directory `
+    -Force `
+    -Path $TempDir |
+    Out-Null
+
+New-Item `
+    -ItemType Directory `
+    -Force `
+    -Path $ExtractDir |
+    Out-Null
+
+# ------------------------------------------------------------
+# EXTRAER ZIP
+# ------------------------------------------------------------
+
+Write-Host "Extrayendo ZIP..."
+
+Expand-Archive `
+    -LiteralPath $ZipPath `
+    -DestinationPath $ExtractDir `
+    -Force
+
+# ------------------------------------------------------------
+# BUSCAR MAIN.EXE
+# ------------------------------------------------------------
+
+$NewExe = Get-ChildItem `
+    -Path $ExtractDir `
+    -Filter "{APP_EXE_NAME}" `
+    -File `
+    -Recurse |
+    Select-Object -First 1
+
+if ($null -eq $NewExe) {{
+
+    throw `
+        "No se encontró {APP_EXE_NAME} dentro del ZIP."
+}}
+
+Write-Host "Nuevo ejecutable:"
+Write-Host $NewExe.FullName
+
+# ------------------------------------------------------------
+# BACKUP
+# ------------------------------------------------------------
+
+$BackupPath = "$ExePath.backup"
+
+if (Test-Path -LiteralPath $ExePath) {{
+
+    Write-Host "Creando respaldo..."
+
+    Copy-Item `
+        -LiteralPath $ExePath `
+        -Destination $BackupPath `
+        -Force
+}}
+
+# ------------------------------------------------------------
+# REEMPLAZAR EXE
+# ------------------------------------------------------------
+
+Write-Host "Reemplazando ejecutable..."
+
+Copy-Item `
+    -LiteralPath $NewExe.FullName `
+    -Destination $ExePath `
+    -Force
+
+# ------------------------------------------------------------
+# VERIFICAR
+# ------------------------------------------------------------
+
+if (-not (Test-Path -LiteralPath $ExePath)) {{
+
+    throw `
+        "No se pudo instalar {APP_EXE_NAME}."
+}}
+
+Write-Host ""
+Write-Host "=========================================="
+Write-Host "ACTUALIZACION APLICADA CORRECTAMENTE"
+Write-Host "=========================================="
+
+Start-Sleep `
+    -Seconds 2
+
+# ------------------------------------------------------------
+# INICIAR NUEVA VERSIÓN
+# ------------------------------------------------------------
+
+Write-Host "Iniciando nueva versión..."
+
+Start-Process `
+    -FilePath $ExePath `
+    -WorkingDirectory $AppDir
+
+Start-Sleep `
+    -Seconds 3
+
+# ------------------------------------------------------------
+# LIMPIAR TEMPORAL
+# ------------------------------------------------------------
+
+try {{
+
+    Remove-Item `
+        -LiteralPath $TempDir `
+        -Recurse `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+}} catch {{}}
+
+# ------------------------------------------------------------
+# LIMPIAR ZIP
+# ------------------------------------------------------------
+
+try {{
+
+    Remove-Item `
+        -LiteralPath $ZipPath `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+}} catch {{}}
+
+# ------------------------------------------------------------
+# LIMPIAR SCRIPT
+# ------------------------------------------------------------
+
+try {{
+
+    Remove-Item `
+        -LiteralPath $PSCommandPath `
+        -Force `
+        -ErrorAction SilentlyContinue
+
+}} catch {{}}
+
+Write-Host ""
+Write-Host "ACTUALIZACION FINALIZADA."
+'''
+
+        # ----------------------------------------------------
+        # GUARDAR SCRIPT
+        # ----------------------------------------------------
+
         with open(
-            ruta_bat,
+            script_path,
             "w",
-            encoding="utf-8",
-            errors="replace"
-        ) as f:
-            f.write(contenido)
+            encoding="utf-8"
+        ) as archivo:
 
-    except Exception:
-        with open(
-            ruta_bat,
-            "w",
-            encoding="cp1252",
-            errors="replace"
-        ) as f:
-            f.write(contenido)
+            archivo.write(
+                script
+            )
 
-    if os.path.exists(ruta_bat):
-        log(f"BAT CREADO CORRECTAMENTE: {ruta_bat}")
-    else:
-        log(f"ERROR: NO SE PUDO CREAR BAT: {ruta_bat}")
+        _log(
+            f"PowerShell creado: "
+            f"{script_path}"
+        )
 
-    return ruta_bat
+        return {
+
+            "ok": True,
+
+            "script_path":
+                script_path
+
+        }
+
+    except Exception as e:
+
+        _log(
+            f"ERROR CREANDO SCRIPT: {e}"
+        )
+
+        return {
+
+            "ok": False,
+
+            "error":
+                str(e)
+
+        }
+
 
 # ============================================================
 # APLICAR PARCHE
@@ -1620,883 +1507,891 @@ exit /b 1
 def aplicar_parche_y_cerrar(
     ruta_zip: str,
     checksum_esperado: Optional[str] = None,
-    descargar_progress_cb: Optional[
-        Callable[[int, int], None]
-    ] = None,
     extraer_progress_cb: Optional[
         Callable[[int, int], None]
-    ] = None,
+    ] = None
 ) -> Dict[str, Any]:
 
-    log("=" * 70)
-    log("APLICAR PARCHE")
+    try:
 
-    res: Dict[str, Any] = {
-        "ok": False,
-        "bat_path": None,
-        "error": None
-    }
+        _log("=" * 70)
+        _log("PREPARANDO ACTUALIZACIÓN")
 
-    # ========================================================
-    # SOLO EXE
-    # ========================================================
-
-    if not getattr(
-        sys,
-        "frozen",
-        False
-    ):
-
-        res[
-            "error"
-        ] = (
-            "El auto-parche solo funciona "
-            "cuando la app está compilada a .exe"
+        _log(
+            f"ZIP: {ruta_zip}"
         )
 
-        log(
-            res["error"]
-        )
+        # ----------------------------------------------------
+        # VALIDAR EXISTENCIA
+        # ----------------------------------------------------
 
-        return res
-
-    # ========================================================
-    # EXISTENCIA ZIP
-    # ========================================================
-
-    if not os.path.exists(
-        ruta_zip
-    ):
-
-        res[
-            "error"
-        ] = (
-            "No existe el archivo ZIP descargado: "
-            + ruta_zip
-        )
-
-        log(
-            res["error"]
-        )
-
-        return res
-
-    log(
-        f"ZIP EXISTE: {ruta_zip}"
-    )
-
-    log(
-        f"TAMAÑO ZIP: "
-        f"{os.path.getsize(ruta_zip)} bytes"
-    )
-
-    # ========================================================
-    # CHECKSUM
-    # ========================================================
-
-    if checksum_esperado:
-
-        log(
-            "Verificando SHA256..."
-        )
-
-        checksum_actual = (
-            _sha256_archivo(
-                ruta_zip
-            )
-        )
-
-        log(
-            f"SHA256 ESPERADO: "
-            f"{checksum_esperado}"
-        )
-
-        log(
-            f"SHA256 ACTUAL: "
-            f"{checksum_actual}"
-        )
-
-        if (
-            checksum_actual.lower()
-            != checksum_esperado.lower()
+        if not os.path.isfile(
+            ruta_zip
         ):
 
-            res[
-                "error"
-            ] = (
-                "Verificación de integridad "
-                "fallida. El checksum SHA256 "
-                "no coincide."
+            return {
+
+                "ok": False,
+
+                "error":
+                    "No existe el archivo ZIP."
+
+            }
+
+        # ----------------------------------------------------
+        # SHA256
+        # ----------------------------------------------------
+
+        if checksum_esperado:
+
+            _log(
+                "Calculando SHA256..."
             )
 
-            log(
-                res["error"]
-            )
-
-            return res
-
-    # ========================================================
-    # RUTAS
-    # ========================================================
-
-    dir_app = (
-        obtener_directorio_ejecutable()
-    )
-
-    ruta_app_exe = (
-        obtener_ruta_app_exe()
-    )
-
-    tmp_patch = os.path.join(
-        dir_app,
-        "_pending_patch"
-    )
-
-    log(
-        f"DIR APP: {dir_app}"
-    )
-
-    log(
-        f"APP EXE: {ruta_app_exe}"
-    )
-
-    log(
-        f"PATCH TEMP: {tmp_patch}"
-    )
-
-    # ========================================================
-    # ELIMINAR PARCHE ANTERIOR
-    # ========================================================
-
-    if os.path.exists(
-        tmp_patch
-    ):
-
-        log(
-            "Eliminando parche anterior..."
-        )
-
-        try:
-
-            shutil.rmtree(
-                tmp_patch,
-                ignore_errors=True
-            )
-
-        except Exception as e:
-
-            log_error(
-                "No se pudo eliminar parche anterior",
-                e
-            )
-
-    # ========================================================
-    # EXTRAER
-    # ========================================================
-
-    ext_res = extraer_zip(
-        ruta_zip,
-        tmp_patch,
-        progress_cb=extraer_progress_cb
-    )
-
-    if not ext_res["ok"]:
-
-        res[
-            "error"
-        ] = ext_res[
-            "error"
-        ]
-
-        try:
-
-            shutil.rmtree(
-                tmp_patch,
-                ignore_errors=True
-            )
-
-        except Exception:
-            pass
-
-        return res
-
-    # ========================================================
-    # BUSCAR MAIN.EXE
-    # ========================================================
-
-    log(
-        "Buscando ejecutable dentro del ZIP..."
-    )
-
-    posibles_exes = [
-
-        os.path.join(
-            tmp_patch,
-            os.path.basename(
-                ruta_app_exe
-            )
-        ),
-
-        os.path.join(
-            tmp_patch,
-            APP_EXE_NAME
-        ),
-    ]
-
-    exe_en_zip = next(
-        (
-            p
-            for p in posibles_exes
-            if os.path.exists(p)
-        ),
-        None
-    )
-
-    # ========================================================
-    # BUSQUEDA RECURSIVA
-    # ========================================================
-
-    if not exe_en_zip:
-
-        log(
-            "No se encontró directamente. "
-            "Buscando recursivamente..."
-        )
-
-        for root, dirs, files in os.walk(
-            tmp_patch
-        ):
-
-            log(
-                f"Revisando: {root}"
-            )
-
-            if APP_EXE_NAME in files:
-
-                exe_en_zip = os.path.join(
-                    root,
-                    APP_EXE_NAME
+            checksum_real = (
+                calcular_sha256(
+                    ruta_zip
                 )
-
-                break
-
-    if not exe_en_zip:
-
-        res[
-            "error"
-        ] = (
-            f"No se encontró {APP_EXE_NAME} "
-            "dentro del ZIP."
-        )
-
-        log(
-            res["error"]
-        )
-
-        try:
-
-            shutil.rmtree(
-                tmp_patch,
-                ignore_errors=True
             )
 
-        except Exception:
-            pass
-
-        return res
-
-    log(
-        f"EXE EN ZIP: {exe_en_zip}"
-    )
-
-    # ========================================================
-    # GENERAR BAT
-    # ========================================================
-
-    try:
-
-        ruta_bat = (
-            _generar_script_actualizacion(
-                ruta_app_exe,
-                tmp_patch,
-                exe_en_zip
-            )
-        )
-
-    except Exception as e:
-
-        log_error(
-            "No se pudo crear script BAT",
-            e
-        )
-
-        res[
-            "error"
-        ] = (
-            "No se pudo crear el script "
-            f"de actualización: {e}"
-        )
-
-        return res
-
-    res["ok"] = True
-
-    res[
-        "bat_path"
-    ] = ruta_bat
-
-    log(
-        f"PARCHE PREPARADO: {ruta_bat}"
-    )
-
-    return res
-
-
-# ============================================================
-# EJECUTAR ACTUALIZADOR
-# ============================================================
-
-def ejecutar_actualizador_y_salir(
-    ruta_bat: str
-) -> bool:
-    """
-    Ejecuta el actualizador externo.
-
-    IMPORTANTE:
-    Esta función solamente inicia el BAT.
-    El cierre del proceso principal se realiza después
-    mediante os._exit(0).
-    """
-
-    log("=" * 70)
-    log("EJECUTANDO ACTUALIZADOR")
-
-    try:
-        ruta_bat_abs = os.path.abspath(ruta_bat)
-
-        log(f"BAT: {ruta_bat_abs}")
-
-        if not os.path.exists(ruta_bat_abs):
-            log("ERROR: BAT no existe")
-            return False
-
-        if os.name != "nt":
-            log("ERROR: Esta función requiere Windows")
-            return False
-
-        log("Sistema operativo: Windows")
-        log("Ejecutando cmd.exe...")
-        log("La consola del actualizador será visible durante esta prueba.")
-
-        # NO usamos CREATE_NO_WINDOW durante las pruebas.
-        # De esta manera podremos ver los errores del BAT.
-        proceso = subprocess.Popen(
-            [
-                "cmd.exe",
-                "/C",
-                ruta_bat_abs
-            ],
-            shell=False,
-            cwd=os.path.dirname(ruta_bat_abs)
-        )
-
-        log(f"PID actualizador: {proceso.pid}")
-        log("Actualizador iniciado correctamente.")
-
-        return True
-
-    except Exception as e:
-        log_error(
-            "No se pudo ejecutar actualizador",
-            e
-        )
-        return False
-# ============================================================
-# FUNCIÓN COMPLETA PARA ACTUALIZAR
-# ============================================================
-
-def actualizar_desde_servidor(
-    progress_descarga_cb: Optional[
-        Callable[[int, int], None]
-    ] = None,
-    progress_extraccion_cb: Optional[
-        Callable[[int, int], None]
-    ] = None,
-) -> Dict[str, Any]:
-
-    log("")
-    log("=" * 70)
-    log("INICIO ACTUALIZACIÓN")
-    log("=" * 70)
-
-    log(
-        f"APP VERSION: {APP_VERSION}"
-    )
-
-    log(
-        f"EXE: {obtener_ruta_app_exe()}"
-    )
-
-    log(
-        f"LOG: {obtener_ruta_log()}"
-    )
-
-    resultado: Dict[str, Any] = {
-        "ok": False,
-        "actualizacion_disponible": False,
-        "actualizacion_aplicada": False,
-        "actualizador_iniciado": False,
-        "version_actual": APP_VERSION,
-        "version_nueva": None,
-        "error": None,
-        "bat_path": None,
-    }
-
-    # ========================================================
-    # PASO 1 - CONSULTAR VERSION
-    # ========================================================
-
-    log("")
-    log("=" * 70)
-    log("PASO 1: CONSULTANDO VERSION.JSON")
-    log("=" * 70)
-
-    info = consultar_version_remota()
-
-    if not info["ok"]:
-
-        resultado["error"] = (
-            info.get("error")
-            or "No se pudo consultar la versión."
-        )
-
-        log(
-            f"ERROR FINAL: {resultado['error']}"
-        )
-
-        return resultado
-
-    # ========================================================
-    # NO HAY ACTUALIZACIÓN
-    # ========================================================
-
-    if not info["hay_actualizacion"]:
-
-        log("")
-        log("=" * 70)
-        log("NO HAY ACTUALIZACIÓN DISPONIBLE")
-        log("=" * 70)
-
-        resultado["ok"] = True
-
-        return resultado
-
-    # ========================================================
-    # ACTUALIZACIÓN DISPONIBLE
-    # ========================================================
-
-    resultado["actualizacion_disponible"] = True
-
-    resultado["version_nueva"] = info.get(
-        "version_remota"
-    )
-
-    log("")
-    log("=" * 70)
-    log("ACTUALIZACIÓN DISPONIBLE")
-    log("=" * 70)
-
-    log(
-        f"VERSIÓN ACTUAL: {APP_VERSION}"
-    )
-
-    log(
-        f"NUEVA VERSIÓN: "
-        f"{resultado['version_nueva']}"
-    )
-
-    # ========================================================
-    # PASO 2 - VERIFICAR PATCH
-    # ========================================================
-
-    log("")
-    log("=" * 70)
-    log("PASO 2: VERIFICANDO POSIBILIDAD DE AUTOAPLICACIÓN")
-    log("=" * 70)
-
-    if not info["puede_autoaplicar"]:
-
-        resultado["error"] = (
-            "La actualización está disponible, "
-            "pero no puede aplicarse automáticamente."
-        )
-
-        log(
-            resultado["error"]
-        )
-
-        return resultado
-
-    patch_url = info.get(
-        "patch_url"
-    )
-
-    if not patch_url:
-
-        resultado["error"] = (
-            "version.json no contiene patch_url."
-        )
-
-        log(
-            resultado["error"]
-        )
-
-        return resultado
-
-    log(
-        f"PATCH URL: {patch_url}"
-    )
-
-    # ========================================================
-    # PASO 3 - CARPETA Y ZIP TEMPORAL
-    # ========================================================
-
-    log("")
-    log("=" * 70)
-    log("PASO 3: PREPARANDO DESCARGA")
-    log("=" * 70)
-
-    dir_app = obtener_directorio_ejecutable()
-
-    ruta_zip = os.path.join(
-        dir_app,
-        "_update_package.zip"
-    )
-
-    log(
-        f"DIR APP: {dir_app}"
-    )
-
-    log(
-        f"ZIP TEMPORAL: {ruta_zip}"
-    )
-
-    # ========================================================
-    # ELIMINAR ZIP ANTERIOR
-    # ========================================================
-
-    if os.path.exists(ruta_zip):
-
-        log(
-            "Eliminando ZIP anterior..."
-        )
-
-        try:
-
-            os.remove(
-                ruta_zip
+            _log(
+                f"SHA256 REAL: "
+                f"{checksum_real}"
             )
 
-            log(
-                "ZIP anterior eliminado."
+            _log(
+                f"SHA256 ESPERADO: "
+                f"{checksum_esperado}"
             )
 
-        except Exception as e:
+            if (
+                checksum_real.lower()
+                !=
+                str(
+                    checksum_esperado
+                ).strip().lower()
+            ):
 
-            log_error(
-                "No se pudo eliminar ZIP anterior",
-                e
+                return {
+
+                    "ok": False,
+
+                    "error":
+                        "El SHA-256 del archivo "
+                        "no coincide con el servidor."
+
+                }
+
+        else:
+
+            _log(
+                "No se proporcionó SHA256."
             )
 
-            resultado["error"] = (
-                "No se pudo eliminar el ZIP anterior: "
-                f"{e}"
+            _log(
+                "Se continúa sin validación SHA256."
             )
 
-            return resultado
+        # ----------------------------------------------------
+        # VALIDAR ZIP
+        # ----------------------------------------------------
 
-    # ========================================================
-    # PASO 4 - DESCARGAR PATCH
-    # ========================================================
-
-    log("")
-    log("=" * 70)
-    log("PASO 4: DESCARGANDO PARCHE")
-    log("=" * 70)
-
-    descarga = descargar_archivo(
-        patch_url,
-        ruta_zip,
-        progress_cb=progress_descarga_cb,
-        timeout=300
-    )
-
-    if not descarga["ok"]:
-
-        resultado["error"] = (
-            descarga.get("error")
-            or "No se pudo descargar el parche."
-        )
-
-        log(
-            f"ERROR DESCARGA: "
-            f"{resultado['error']}"
-        )
-
-        return resultado
-
-    log(
-        "DESCARGA DEL PARCHE COMPLETADA."
-    )
-
-    log(
-        f"ZIP: {ruta_zip}"
-    )
-
-    # ========================================================
-    # PASO 5 - VALIDAR TAMAÑO
-    # ========================================================
-
-    log("")
-    log("=" * 70)
-    log("PASO 5: VALIDANDO TAMAÑO DEL ZIP")
-    log("=" * 70)
-
-    file_size = int(
-        info.get(
-            "file_size_bytes"
-        )
-        or 0
-    )
-
-    if file_size > 0:
-
-        tamano_real = os.path.getsize(
+        validacion = validar_zip(
             ruta_zip
         )
 
-        log(
-            f"TAMAÑO ESPERADO: {file_size}"
+        if not validacion.get(
+            "ok"
+        ):
+
+            return validacion
+
+        nombres = validacion.get(
+            "files",
+            []
         )
 
-        log(
-            f"TAMAÑO REAL: {tamano_real}"
+        # ----------------------------------------------------
+        # BUSCAR MAIN.EXE
+        # ----------------------------------------------------
+
+        main_zip = (
+            _buscar_main_en_zip(
+                nombres
+            )
         )
 
-        if tamano_real != file_size:
+        if not main_zip:
 
-            resultado["error"] = (
-                "El tamaño del ZIP descargado "
-                "no coincide con file_size_bytes."
-            )
+            return {
 
-            log(
-                resultado["error"]
+                "ok": False,
+
+                "error":
+                    "El ZIP no contiene "
+                    f"{APP_EXE_NAME}."
+
+            }
+
+        _log(
+            f"MAIN.EXE EN ZIP: "
+            f"{main_zip}"
+        )
+
+        # ----------------------------------------------------
+        # DIRECTORIO DE LA APP
+        # ----------------------------------------------------
+
+        dir_app = (
+            obtener_directorio_ejecutable()
+        )
+
+        _log(
+            f"DIRECTORIO APP: "
+            f"{dir_app}"
+        )
+
+        # ----------------------------------------------------
+        # VERIFICAR DIRECTORIO
+        # ----------------------------------------------------
+
+        if not os.path.isdir(
+            dir_app
+        ):
+
+            return {
+
+                "ok": False,
+
+                "error":
+                    "No existe el directorio "
+                    f"de la aplicación: {dir_app}"
+
+            }
+
+        # ----------------------------------------------------
+        # CREAR SCRIPT
+        # ----------------------------------------------------
+
+        resultado_script = (
+            _crear_script_actualizador(
+                ruta_zip,
+                dir_app
             )
+        )
+
+        if not resultado_script.get(
+            "ok"
+        ):
+
+            return resultado_script
+
+        script_path = (
+            resultado_script.get(
+                "script_path"
+            )
+        )
+
+        _log(
+            f"ACTUALIZADOR: "
+            f"{script_path}"
+        )
+
+        # ----------------------------------------------------
+        # PROGRESO
+        # ----------------------------------------------------
+
+        if extraer_progress_cb:
 
             try:
 
-                os.remove(
-                    ruta_zip
+                extraer_progress_cb(
+                    1,
+                    1
                 )
 
             except Exception:
 
                 pass
 
+        return {
+
+            "ok": True,
+
+            "bat_path":
+                script_path,
+
+            "script_path":
+                script_path,
+
+            "zip_path":
+                ruta_zip,
+
+            "app_dir":
+                dir_app,
+
+        }
+
+    except Exception as e:
+
+        _log(
+            f"ERROR PREPARANDO PARCHE: {e}"
+        )
+
+        return {
+
+            "ok": False,
+
+            "error":
+                str(e)
+
+        }
+
+
+# ============================================================
+# EJECUTAR ACTUALIZADOR CON UAC
+# ============================================================
+
+def ejecutar_actualizador_y_salir(
+    ruta_bat: str
+) -> bool:
+
+    try:
+
+        # ----------------------------------------------------
+        # VALIDAR RUTA
+        # ----------------------------------------------------
+
+        if not ruta_bat:
+
+            _log(
+                "ruta_bat vacía."
+            )
+
+            return False
+
+        if not os.path.isfile(
+            ruta_bat
+        ):
+
+            _log(
+                f"No existe actualizador: "
+                f"{ruta_bat}"
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # POWERSHELL
+        # ----------------------------------------------------
+
+        powershell = shutil.which(
+            "powershell.exe"
+        )
+
+        if not powershell:
+
+            powershell = os.path.join(
+
+                os.environ.get(
+                    "WINDIR",
+                    r"C:\Windows"
+                ),
+
+                "System32",
+
+                "WindowsPowerShell",
+
+                "v1.0",
+
+                "powershell.exe"
+            )
+
+        if not os.path.isfile(
+            powershell
+        ):
+
+            _log(
+                "No se encontró PowerShell."
+            )
+
+            return False
+
+        # ----------------------------------------------------
+        # ARGUMENTOS
+        # ----------------------------------------------------
+
+        parametros = (
+            "-NoProfile "
+            "-ExecutionPolicy Bypass "
+            "-File "
+            f'"{ruta_bat}"'
+        )
+
+        _log(
+            "Solicitando permisos de administrador..."
+        )
+
+        # ----------------------------------------------------
+        # UAC
+        # ----------------------------------------------------
+
+        resultado = (
+            ctypes.windll.shell32.ShellExecuteW(
+
+                None,
+
+                "runas",
+
+                powershell,
+
+                parametros,
+
+                os.path.dirname(
+                    ruta_bat
+                ),
+
+                1
+            )
+        )
+
+        # ----------------------------------------------------
+        # RESULTADO
+        # ----------------------------------------------------
+
+        if resultado <= 32:
+
+            _log(
+                f"ShellExecuteW falló: "
+                f"{resultado}"
+            )
+
+            return False
+
+        _log(
+            "Actualizador elevado iniciado."
+        )
+
+        _log(
+            "La aplicación principal debe cerrarse."
+        )
+
+        return True
+
+    except Exception as e:
+
+        _log(
+            "ERROR EJECUTANDO ACTUALIZADOR: "
+            f"{e}"
+        )
+
+        return False
+
+
+# ============================================================
+# FLUJO COMPLETO DE ACTUALIZACIÓN
+# ============================================================
+
+def comprobar_y_preparar_actualizacion(
+    progress_cb: Optional[
+        Callable[[int, int], None]
+    ] = None
+) -> Dict[str, Any]:
+
+    try:
+
+        _log("=" * 70)
+        _log("INICIO COMPROBACIÓN ACTUALIZACIÓN")
+        _log("=" * 70)
+
+        # ----------------------------------------------------
+        # 1. CONSULTAR SERVIDOR
+        # ----------------------------------------------------
+
+        resultado = (
+            consultar_version_remota()
+        )
+
+        if not resultado.get(
+            "ok"
+        ):
+
             return resultado
 
-    else:
+        # ----------------------------------------------------
+        # 2. NO HAY ACTUALIZACIÓN
+        # ----------------------------------------------------
 
-        log(
-            "file_size_bytes = 0. "
-            "Se omite validación de tamaño."
+        if not resultado.get(
+            "hay_actualizacion"
+        ):
+
+            _log(
+                "No hay actualización disponible."
+            )
+
+            return {
+
+                "ok": True,
+
+                "hay_actualizacion":
+                    False,
+
+                "version_local":
+                    APP_VERSION,
+
+                "version_remota":
+                    resultado.get(
+                        "version_remota"
+                    )
+
+            }
+
+        # ----------------------------------------------------
+        # 3. VERIFICAR SI PUEDE AUTOAPLICAR
+        # ----------------------------------------------------
+
+        if not resultado.get(
+            "puede_autoaplicar"
+        ):
+
+            _log(
+                "La actualización no puede "
+                "autoaplicarse desde esta versión."
+            )
+
+            return {
+
+                "ok": True,
+
+                "hay_actualizacion":
+                    True,
+
+                "puede_autoaplicar":
+                    False,
+
+                "version_local":
+                    APP_VERSION,
+
+                "version_remota":
+                    resultado.get(
+                        "version_remota"
+                    ),
+
+                "mensaje":
+                    "La versión actual no puede "
+                    "aplicar este parche."
+
+            }
+
+        # ----------------------------------------------------
+        # 4. DETERMINAR URL
+        # ----------------------------------------------------
+
+        strategy = str(
+            resultado.get(
+                "strategy",
+                "zip_patch"
+            )
+        ).lower().strip()
+
+        version_remota = str(
+            resultado.get(
+                "version_remota"
+            )
+        ).strip()
+
+        patch_url = resultado.get(
+            "patch_url"
         )
 
-    # ========================================================
-    # PASO 6 - PREPARAR PARCHE
-    # ========================================================
+        download_url = resultado.get(
+            "download_url"
+        )
 
-    log("")
-    log("=" * 70)
-    log("PASO 6: PREPARANDO PARCHE")
-    log("=" * 70)
-
-    parche = aplicar_parche_y_cerrar(
-        ruta_zip,
-        checksum_esperado=info.get(
+        checksum = resultado.get(
             "checksum_sha256"
-        ),
-        descargar_progress_cb=progress_descarga_cb,
-        extraer_progress_cb=progress_extraccion_cb
-    )
-
-    if not parche["ok"]:
-
-        resultado["error"] = (
-            parche.get("error")
-            or "No se pudo preparar la actualización."
         )
 
-        log(
-            f"ERROR PARCHE: "
-            f"{resultado['error']}"
+        # ----------------------------------------------------
+        # 5. ZIP
+        # ----------------------------------------------------
+
+        if strategy == "zip_patch":
+
+            url = patch_url
+
+            if not url:
+
+                return {
+
+                    "ok": False,
+
+                    "error":
+                        "strategy=zip_patch pero "
+                        "patch_url está vacío."
+
+                }
+
+            updates_dir = (
+                obtener_directorio_updates()
+            )
+
+            ruta_zip = os.path.join(
+                updates_dir,
+                f"FacturasVentas-{version_remota}.zip"
+            )
+
+            _log(
+                "ESTRATEGIA: ZIP PATCH"
+            )
+
+            _log(
+                f"URL ZIP: {url}"
+            )
+
+            _log(
+                f"RUTA ZIP LOCAL: {ruta_zip}"
+            )
+
+            # ------------------------------------------------
+            # DESCARGAR
+            # ------------------------------------------------
+
+            descarga = descargar_archivo(
+                url,
+                ruta_zip,
+                progress_cb=progress_cb,
+                timeout=120
+            )
+
+            if not descarga.get(
+                "ok"
+            ):
+
+                return {
+
+                    "ok": False,
+
+                    "error":
+                        "No se pudo descargar "
+                        "el parche: "
+                        +
+                        descarga.get(
+                            "error",
+                            "Error desconocido."
+                        )
+
+                }
+
+            # ------------------------------------------------
+            # PREPARAR
+            # ------------------------------------------------
+
+            preparado = (
+                aplicar_parche_y_cerrar(
+                    ruta_zip,
+                    checksum_esperado=checksum,
+                    extraer_progress_cb=
+                        progress_cb
+                )
+            )
+
+            if not preparado.get(
+                "ok"
+            ):
+
+                return preparado
+
+            return {
+
+                "ok": True,
+
+                "hay_actualizacion":
+                    True,
+
+                "preparado":
+                    True,
+
+                "strategy":
+                    strategy,
+
+                "version_local":
+                    APP_VERSION,
+
+                "version_remota":
+                    version_remota,
+
+                "zip_path":
+                    ruta_zip,
+
+                "script_path":
+                    preparado.get(
+                        "script_path"
+                    ),
+
+                "app_dir":
+                    preparado.get(
+                        "app_dir"
+                    ),
+
+                "checksum_sha256":
+                    checksum,
+
+                "release_notes":
+                    resultado.get(
+                        "release_notes",
+                        []
+                    )
+
+            }
+
+        # ----------------------------------------------------
+        # 6. ACTUALIZACIÓN DIRECTA EXE
+        # ----------------------------------------------------
+
+        elif strategy in (
+            "exe",
+            "direct",
+            "direct_exe"
+        ):
+
+            if not download_url:
+
+                return {
+
+                    "ok": False,
+
+                    "error":
+                        "No existe download_url."
+
+                }
+
+            updates_dir = (
+                obtener_directorio_updates()
+            )
+
+            ruta_exe = os.path.join(
+                updates_dir,
+                f"FacturasVentas-{version_remota}.exe"
+            )
+
+            _log(
+                "ESTRATEGIA: EXE DIRECTO"
+            )
+
+            descarga = descargar_archivo(
+                download_url,
+                ruta_exe,
+                progress_cb=progress_cb,
+                timeout=120
+            )
+
+            if not descarga.get(
+                "ok"
+            ):
+
+                return descarga
+
+            return {
+
+                "ok": True,
+
+                "hay_actualizacion":
+                    True,
+
+                "preparado":
+                    True,
+
+                "strategy":
+                    "exe",
+
+                "version_local":
+                    APP_VERSION,
+
+                "version_remota":
+                    version_remota,
+
+                "exe_path":
+                    ruta_exe,
+
+                "release_notes":
+                    resultado.get(
+                        "release_notes",
+                        []
+                    )
+
+            }
+
+        # ----------------------------------------------------
+        # 7. ESTRATEGIA DESCONOCIDA
+        # ----------------------------------------------------
+
+        else:
+
+            return {
+
+                "ok": False,
+
+                "error":
+                    "Estrategia de actualización "
+                    f"no soportada: {strategy}"
+
+            }
+
+    except Exception as e:
+
+        _log(
+            f"ERROR ACTUALIZACIÓN: {e}"
         )
+
+        return {
+
+            "ok": False,
+
+            "error":
+                str(e)
+
+        }
+
+
+# ============================================================
+# FUNCIÓN PRINCIPAL PARA LLAMAR DESDE LOGIN
+# ============================================================
+
+def ejecutar_actualizacion_automatica(
+    progress_cb: Optional[
+        Callable[[int, int], None]
+    ] = None
+) -> Dict[str, Any]:
+
+    try:
+
+        _log("=" * 70)
+        _log("ACTUALIZACIÓN AUTOMÁTICA")
+        _log("=" * 70)
+
+        resultado = (
+            comprobar_y_preparar_actualizacion(
+                progress_cb
+            )
+        )
+
+        if not resultado.get(
+            "ok"
+        ):
+
+            _log(
+                "ERROR: "
+                +
+                str(
+                    resultado.get(
+                        "error"
+                    )
+                )
+            )
+
+            return resultado
+
+        if not resultado.get(
+            "hay_actualizacion"
+        ):
+
+            return resultado
+
+        # ----------------------------------------------------
+        # ZIP PATCH
+        # ----------------------------------------------------
+
+        if resultado.get(
+            "strategy"
+        ) == "zip_patch":
+
+            script_path = resultado.get(
+                "script_path"
+            )
+
+            if not script_path:
+
+                return {
+
+                    "ok": False,
+
+                    "error":
+                        "No se generó "
+                        "el script de actualización."
+
+                }
+
+            _log(
+                "Ejecutando actualizador..."
+            )
+
+            iniciado = (
+                ejecutar_actualizador_y_salir(
+                    script_path
+                )
+            )
+
+            if not iniciado:
+
+                return {
+
+                    "ok": False,
+
+                    "error":
+                        "No se pudo iniciar "
+                        "el actualizador."
+
+                }
+
+            return {
+
+                "ok": True,
+
+                "hay_actualizacion":
+                    True,
+
+                "actualizador_iniciado":
+                    True,
+
+                "cerrar_app":
+                    True,
+
+                "version_local":
+                    APP_VERSION,
+
+                "version_remota":
+                    resultado.get(
+                        "version_remota"
+                    )
+
+            }
+
+        # ----------------------------------------------------
+        # EXE DIRECTO
+        # ----------------------------------------------------
+
+        if resultado.get(
+            "strategy"
+        ) == "exe":
+
+            return resultado
 
         return resultado
 
-    # ========================================================
-    # BAT GENERADO
-    # ========================================================
+    except Exception as e:
 
-    ruta_bat = parche.get(
-        "bat_path"
-    )
-
-    if not ruta_bat:
-
-        resultado["error"] = (
-            "El parche se preparó, "
-            "pero no se obtuvo la ruta del BAT."
+        _log(
+            f"ERROR EJECUTANDO "
+            f"ACTUALIZACIÓN: {e}"
         )
 
-        log(
-            resultado["error"]
-        )
+        return {
 
-        return resultado
+            "ok": False,
 
-    ruta_bat = os.path.abspath(
-        ruta_bat
-    )
+            "error":
+                str(e)
 
-    resultado["bat_path"] = ruta_bat
-
-    log("")
-    log("=" * 70)
-    log("PARCHE PREPARADO CORRECTAMENTE")
-    log("=" * 70)
-
-    log(
-        f"BAT: {ruta_bat}"
-    )
-
-    # ========================================================
-    # VERIFICAR QUE EL BAT REALMENTE EXISTE
-    # ========================================================
-
-    if not os.path.exists(ruta_bat):
-
-        resultado["error"] = (
-            "El archivo BAT fue generado "
-            "pero no existe en disco."
-        )
-
-        log(
-            resultado["error"]
-        )
-
-        return resultado
-
-    log(
-        "BAT VERIFICADO: EXISTE"
-    )
-
-    # ========================================================
-    # PASO 7 - EJECUTAR ACTUALIZADOR
-    # ========================================================
-
-    log("")
-    log("=" * 70)
-    log("PASO 7: EJECUTANDO ACTUALIZADOR EXTERNO")
-    log("=" * 70)
-
-    log(
-        f"BAT: {ruta_bat}"
-    )
-
-    actualizado = ejecutar_actualizador_y_salir(
-        ruta_bat
-    )
-
-    if not actualizado:
-
-        resultado["error"] = (
-            "No se pudo iniciar "
-            "el actualizador externo."
-        )
-
-        log(
-            resultado["error"]
-        )
-
-        return resultado
-
-    # ========================================================
-    # EL ACTUALIZADOR YA FUE LANZADO
-    # ========================================================
-
-    resultado["ok"] = True
-
-    resultado["actualizador_iniciado"] = True
-
-    # OJO:
-    # Todavía no podemos decir que la actualización terminó.
-    # El BAT externo es quien realizará el reemplazo.
-
-    resultado["actualizacion_aplicada"] = False
-
-    log("")
-    log("=" * 70)
-    log("ACTUALIZADOR EXTERNO INICIADO CORRECTAMENTE")
-    log("=" * 70)
-
-    log(
-        f"PID DEL ACTUALIZADOR LANZADO."
-    )
-
-    log(
-        f"BAT: {ruta_bat}"
-    )
-
-    log("")
-    log(
-        "El proceso principal se cerrará ahora."
-    )
-
-    log(
-        "El BAT continuará con la actualización."
-    )
-
-    # ========================================================
-    # PEQUEÑA ESPERA
-    # ========================================================
-
-    time.sleep(1)
-
-    # ========================================================
-    # PASO 8 - CERRAR COMPLETAMENTE LA APP
-    # ========================================================
-
-    log("")
-    log("=" * 70)
-    log("PASO 8: FINALIZANDO PROCESO PRINCIPAL")
-    log("=" * 70)
-
-    log(
-        "os._exit(0)"
-    )
-
-    # MUY IMPORTANTE:
-    #
-    # No utilizar sys.exit() aquí.
-    #
-    # El BAT necesita que este proceso haya terminado
-    # para poder reemplazar main.exe.
-    #
-    # os._exit(0) termina inmediatamente el proceso.
-
-    os._exit(0)
-
-    # Nunca debería llegar aquí.
-    return resultado
+        }
