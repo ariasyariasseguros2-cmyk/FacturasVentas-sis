@@ -1092,6 +1092,26 @@ class TableroFacturacion(tk.Frame):
             self._leyenda_vars["rojo"].set(f"({rojo})")
             self._leyenda_vars["morado"].set(f"({morado})")
 
+    def _refrescar_leyenda_desde_tags(self):
+        conteos = {
+            "verde": 0,
+            "amarillo": 0,
+            "rojo": 0,
+            "morado": 0,
+        }
+        for iid in self.tree.get_children():
+            tags = self.tree.item(iid, "tags") or ()
+            tag = str(tags[0]).strip().lower() if tags else ""
+            if tag in conteos:
+                conteos[tag] += 1
+
+        self._actualizar_leyenda_conteos(
+            conteos["verde"],
+            conteos["amarillo"],
+            conteos["rojo"],
+            conteos["morado"],
+        )
+
     def _es_columna_tipo(self, col_id: str, tipo_objetivo: str) -> bool:
         for item in self.COLUMNS:
             if item[0] == col_id:
@@ -1831,7 +1851,7 @@ class TableroFacturacion(tk.Frame):
         elif col_id == "prima_total":
             row["monto_doc"] = row["prima_total"]
         self.tree.item(iid, values=self._valores_tabla(row))
-        self._actualizar_leyenda_conteos(0, 0, 0, 0)
+        self._refrescar_leyenda_desde_tags()
         self._actualizar_totales()
 
     # --- Helpers
