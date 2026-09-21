@@ -12,6 +12,7 @@ from utils.validacion_bd import (
     COLOR_VERDE,
     COLOR_AMARILLO,
     COLOR_ROJO,
+    COLOR_MORADO,
 )
 
 
@@ -922,23 +923,48 @@ def parsear_fila_por_patrones(celdas) -> Optional[Dict[str, Any]]:
 # ============================================================
 
 class TableroFacturacion(tk.Frame):
-    COLUMNS = (
-        ("fecha", "Fecha Inicio", 90),
-        ("tipo_doc", "Tipo de Documento", 170),
-        ("nro_documento", "Nro. Documento", 180),
-        ("doc_legal", "Doc. Legal", 120),
-        ("monto_doc", f"Monto Doc. s/imp.", 120, "moneda"),
-        ("monto_comision", f"Monto Comisión Broker", 140, "moneda"),
-        ("porcentaje_comision", "% Comisión", 85, "porcentaje"),
-        ("identificacion", "Nro Identificación", 130),
-        ("cliente", "Cliente", 260),
+    SANITAS_COLUMNS = (
+        ("compania", "Compañía", 150),
+        ("ruc", "Ruc", 110),
+        ("contratante", "Contratante", 220),
+        ("contrato", "Contrato", 120),
+        ("fecha_emision", "Fecha Emisión", 105),
+        ("documento", "Documento", 170),
+        ("inicio_vigencia", "Inicio Vigencia", 105),
+        ("fin_vigencia", "Fin Vigencia", 105),
+        ("fecha_comprobante", "Fecha Comprobante", 120),
+        ("comprobante", "Comprobante", 120),
+        ("fecha_vencimiento", "Fecha Vencimiento", 120),
+        ("estado_pago", "Estado Pago", 100),
+        ("fecha_pago", "Fecha Pago", 100),
+        ("cip", "CIP", 80),
+        ("importe_original", "Importe Original", 120, "moneda"),
+        ("importe_abonado", "Importe Abonado", 120, "moneda"),
+        ("saldo", "Saldo", 100, "moneda"),
     )
+    CRECER_COLUMNS = (
+        ("correlativo", "CORRELATIVO", 95),
+        ("producto", "PRODUCTO", 160),
+        ("movimiento", "MOVIMIENTO", 130),
+        ("poliza", "PÓLIZA", 150),
+        ("contratante", "CONTRATANTE", 240),
+        ("fecha_registro", "FECHA DE REGISTRO", 125),
+        ("prima_total", "PRIMA TOTAL", 120, "moneda"),
+        ("medio_pago", "MEDIO DE PAGO", 130),
+        ("nro_comprobante", "NRO DE COMPROBANTE", 150),
+        ("codigo_pago", "CÓDIGO DE PAGO", 130),
+        ("estado_pago", "ESTADO DE PAGO", 120),
+        ("fecha_pago", "FECHA DE PAGO", 110),
+    )
+    COLUMNS = SANITAS_COLUMNS
 
     def __init__(self, master, **kwargs):
         super().__init__(master, **kwargs)
         self._editor: Optional[Tuple[ttk.Entry, str, int, str]] = None
         self._rows: List[Dict[str, Any]] = []
         self._uid_counter = 0
+        self.COLUMNS = self.SANITAS_COLUMNS
+        self._excel_formato_actual = "sanitas"
         self.configure(bg="#f1f5f9")
         self._construir()
 
@@ -1034,6 +1060,7 @@ class TableroFacturacion(tk.Frame):
             ("verde", COLOR_VERDE,    "#166534", "Recibo + Factura"),
             ("amarillo", COLOR_AMARILLO, "#92400e", "Solo hay Recibo"),
             ("rojo", COLOR_ROJO,     "#991b1b", "Sin Recibo ni Factura"),
+            ("morado", COLOR_MORADO, "#6d28d9", "Anulados"),
         ]
         self._leyenda_vars: Dict[str, tk.StringVar] = {}
         for i, (key, bg, fg, texto) in enumerate(reglas):
@@ -1052,18 +1079,36 @@ class TableroFacturacion(tk.Frame):
             tk.Label(item, textvariable=sv, bg="#f8fafc", fg=fg,
                      font=("Segoe UI", 9, "bold")).pack(side="left")
 
-    def _actualizar_leyenda_conteos(self, verde: int = 0, amarillo: int = 0, rojo: int = 0):
+    def _actualizar_leyenda_conteos(
+        self,
+        verde: int = 0,
+        amarillo: int = 0,
+        rojo: int = 0,
+        morado: int = 0,
+    ):
         if hasattr(self, "_leyenda_vars"):
             self._leyenda_vars["verde"].set(f"({verde})")
             self._leyenda_vars["amarillo"].set(f"({amarillo})")
             self._leyenda_vars["rojo"].set(f"({rojo})")
+            self._leyenda_vars["morado"].set(f"({morado})")
 
-    def _construir_tabla(self, parent):
-        tv_frame = tk.Frame(parent, bg="#ffffff")
-        tv_frame.pack(fill="both", expand=True)
+    def _es_columna_tipo(self, col_id: str, tipo_objetivo: str) -> bool:
+        for item in self.COLUMNS:
+            if item[0] == col_id:
+                tipo = item[3] if len(item) > 3 else "text"
+                return tipo == tipo_objetivo
+        return False
 
+    def _aplicar_columnas_treeview(self):
         cols = [c[0] for c in self.COLUMNS]
-        self.tree = ttk.Treeview(tv_frame, columns=cols, show="headings", selectmode="browse", height=18)
+        self.tree.configure(columns=cols)
+
+        for cid in list(self.tree["displaycolumns"]):
+            try:
+                self.tree.heading(cid, text="")
+                self.tree.column(cid, width=0, stretch=False)
+            except Exception:
+                pass
 
         for item in self.COLUMNS:
             cid = item[0]
@@ -1072,7 +1117,38 @@ class TableroFacturacion(tk.Frame):
             align = item[3] if len(item) > 3 else "w"
             self.tree.heading(cid, text=text)
             anchor = "e" if align in ("moneda", "porcentaje", "e") else "w"
-            self.tree.column(cid, width=width, anchor=anchor, stretch=False if cid != "cliente" else True)
+            self.tree.column(
+                cid,
+                width=width,
+                anchor=anchor,
+                stretch=False if cid != "contratante" else True,
+            )
+
+    def _cambiar_formato_excel(self, formato: str):
+        columnas = (
+            self.CRECER_COLUMNS
+            if formato == "crecer"
+            else self.SANITAS_COLUMNS
+        )
+        self._excel_formato_actual = formato
+        self.COLUMNS = columnas
+
+        if hasattr(self, "tree"):
+            for iid in list(self.tree.get_children()):
+                self.tree.delete(iid)
+            self._rows.clear()
+            self._aplicar_columnas_treeview()
+            self._actualizar_leyenda_conteos(0, 0, 0, 0)
+            self._actualizar_totales()
+
+    def _construir_tabla(self, parent):
+        tv_frame = tk.Frame(parent, bg="#ffffff")
+        tv_frame.pack(fill="both", expand=True)
+
+        cols = [c[0] for c in self.COLUMNS]
+        self.tree = ttk.Treeview(tv_frame, columns=cols, show="headings", selectmode="browse", height=18)
+
+        self._aplicar_columnas_treeview()
 
         scrollbar_y = ttk.Scrollbar(tv_frame, orient="vertical", command=self.tree.yview)
         scrollbar_x = ttk.Scrollbar(tv_frame, orient="horizontal", command=self.tree.xview)
@@ -1093,6 +1169,7 @@ class TableroFacturacion(tk.Frame):
         self.tree.tag_configure("verde", background=COLOR_VERDE, foreground="#166534")
         self.tree.tag_configure("amarillo", background=COLOR_AMARILLO, foreground="#92400e")
         self.tree.tag_configure("rojo", background=COLOR_ROJO, foreground="#991b1b")
+        self.tree.tag_configure("morado", background=COLOR_MORADO, foreground="#6d28d9")
 
         self.tree.grid(row=0, column=0, sticky="nsew")
         scrollbar_y.grid(row=0, column=1, sticky="ns")
@@ -1129,10 +1206,11 @@ class TableroFacturacion(tk.Frame):
             self._actualizar_totales()
             return
 
+        self._cambiar_formato_excel("sanitas")
         for f in filas:
             self._append_row(f)
 
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._actualizar_leyenda_conteos(0, 0, 0, 0)
         self._actualizar_totales()
         self.lbl_estado.configure(
             text=f"Importado: {len(filas)} filas desde {os.path.basename(path)}  |  Total registros: {len(self._rows)}",
@@ -1141,7 +1219,7 @@ class TableroFacturacion(tk.Frame):
     def _cargar_excel(self):
         path = filedialog.askopenfilename(
             parent=self,
-            title="Seleccionar estado de cuenta Excel de Sanitas",
+            title="Seleccionar estado de cuenta Excel",
             filetypes=[
                 ("Archivos Excel", "*.xlsx *.xlsm"),
                 ("Todos los archivos", "*.*"),
@@ -1152,7 +1230,27 @@ class TableroFacturacion(tk.Frame):
 
         try:
             from views.bill_sanitas_excel import extraer_estado_cuenta_sanitas
-            filas_excel = extraer_estado_cuenta_sanitas(path)
+            from views.bill_crecer_excel import extraer_estado_cuenta_crecer
+
+            filas_excel = []
+            formato_excel = None
+            errores = []
+
+            try:
+                filas_excel = extraer_estado_cuenta_sanitas(path)
+                formato_excel = "sanitas"
+            except Exception as exc_sanitas:
+                errores.append(str(exc_sanitas))
+
+            if formato_excel is None:
+                try:
+                    filas_excel = extraer_estado_cuenta_crecer(path)
+                    formato_excel = "crecer"
+                except Exception as exc_crecer:
+                    errores.append(str(exc_crecer))
+
+            if formato_excel is None:
+                raise ValueError("\n\n".join(errores))
         except Exception as exc:
             messagebox.showerror(
                 "Error al leer Excel",
@@ -1169,24 +1267,96 @@ class TableroFacturacion(tk.Frame):
             )
             return
 
-        for fila_excel in filas_excel:
-            importe = _to_decimal(fila_excel.get("importe"))
-            self._append_row({
-                "fecha": fila_excel.get("fecha_emision", ""),
-                "tipo_doc": fila_excel.get("compania", ""),
-                "nro_documento": fila_excel.get("documento", ""),
-                "doc_legal": fila_excel.get("comprobante", ""),
-                "monto_doc": importe,
-                "monto_comision": Decimal("0"),
-                "porcentaje_comision": Decimal("0"),
-                "identificacion": fila_excel.get("ruc", ""),
-                "cliente": fila_excel.get("contratante", ""),
-            })
+        self._cambiar_formato_excel(formato_excel)
 
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        if formato_excel == "sanitas":
+            for fila_excel in filas_excel:
+                importe_original = _to_decimal(
+                    fila_excel.get("importe_original")
+                    or fila_excel.get("importe")
+                )
+                importe_abonado = _to_decimal(
+                    fila_excel.get("importe_abonado")
+                )
+                saldo = _to_decimal(
+                    fila_excel.get("saldo")
+                )
+                self._append_row({
+                    "compania": fila_excel.get("compania", ""),
+                    "ruc": fila_excel.get("ruc", ""),
+                    "contratante": fila_excel.get("contratante", ""),
+                    "contrato": fila_excel.get("contrato", ""),
+                    "fecha_emision": fila_excel.get("fecha_emision", ""),
+                    "documento": fila_excel.get("documento", ""),
+                    "inicio_vigencia": fila_excel.get("inicio_vigencia", ""),
+                    "fin_vigencia": fila_excel.get("fin_vigencia", ""),
+                    "fecha_comprobante": fila_excel.get("fecha_comprobante", ""),
+                    "comprobante": fila_excel.get("comprobante", ""),
+                    "fecha_vencimiento": fila_excel.get("fecha_vencimiento", ""),
+                    "estado_pago": fila_excel.get("estado_pago", ""),
+                    "fecha_pago": fila_excel.get("fecha_pago", ""),
+                    "cip": fila_excel.get("cip", ""),
+                    "importe_original": importe_original,
+                    "importe_abonado": importe_abonado,
+                    "saldo": saldo,
+                    "fecha": (
+                        fila_excel.get("inicio_vigencia", "")
+                        or fila_excel.get("fecha_emision", "")
+                    ),
+                    "tipo_doc": fila_excel.get("compania", ""),
+                    "nro_documento": fila_excel.get("documento", ""),
+                    "nro_documento_validacion": (
+                        fila_excel.get("documento_validacion", "")
+                        or fila_excel.get("documento", "")
+                    ),
+                    "doc_legal": fila_excel.get("comprobante", ""),
+                    "monto_doc": importe_original,
+                    "monto_comision": Decimal("0"),
+                    "porcentaje_comision": Decimal("0"),
+                    "identificacion": fila_excel.get("ruc", ""),
+                    "cliente": fila_excel.get("contratante", ""),
+                })
+        else:
+            for fila_excel in filas_excel:
+                prima_total = _to_decimal(fila_excel.get("prima_total"))
+                self._append_row({
+                    "correlativo": fila_excel.get("correlativo", ""),
+                    "producto": fila_excel.get("producto", ""),
+                    "movimiento": fila_excel.get("movimiento", ""),
+                    "poliza": fila_excel.get("poliza", ""),
+                    "contratante": fila_excel.get("contratante", ""),
+                    "fecha_registro": fila_excel.get("fecha_registro", ""),
+                    "prima_total": prima_total,
+                    "medio_pago": fila_excel.get("medio_pago", ""),
+                    "nro_comprobante": fila_excel.get("nro_comprobante", ""),
+                    "codigo_pago": fila_excel.get("codigo_pago", ""),
+                    "estado_pago": fila_excel.get("estado_pago", ""),
+                    "fecha_pago": fila_excel.get("fecha_pago", ""),
+                    "fecha": fila_excel.get("fecha_registro", ""),
+                    "tipo_doc": fila_excel.get("producto", ""),
+                    "nro_documento": fila_excel.get("poliza", ""),
+                    "nro_documento_validacion": fila_excel.get("poliza", ""),
+                    "doc_legal": (
+                        fila_excel.get("nro_comprobante", "")
+                        or fila_excel.get("codigo_pago", "")
+                    ),
+                    "doc_legal_validacion": (
+                        fila_excel.get("nro_comprobante", "")
+                        or fila_excel.get("codigo_pago", "")
+                    ),
+                    "monto_doc": prima_total,
+                    "monto_comision": Decimal("0"),
+                    "porcentaje_comision": Decimal("0"),
+                    "cliente": fila_excel.get("contratante", ""),
+                })
+
+        self._actualizar_leyenda_conteos(0, 0, 0, 0)
         self._actualizar_totales()
         self.lbl_estado.configure(
-            text=f"Importado: {len(filas_excel)} filas desde {os.path.basename(path)}  |  Total registros: {len(self._rows)}",
+            text=(
+                f"Importado ({formato_excel.title()}): {len(filas_excel)} filas desde "
+                f"{os.path.basename(path)}  |  Total registros: {len(self._rows)}"
+            ),
             fg="#059669",
         )
 
@@ -1230,23 +1400,34 @@ class TableroFacturacion(tk.Frame):
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill("solid", fgColor="2563EB")
 
-        for row in self._rows:
-            worksheet.append([
-                row.get("fecha", ""),
-                row.get("tipo_doc", ""),
-                row.get("nro_documento", ""),
-                row.get("doc_legal", ""),
-                float(_to_decimal(row.get("monto_doc"))),
-                float(_to_decimal(row.get("monto_comision"))),
-                float(_to_decimal(row.get("porcentaje_comision"))),
-                row.get("identificacion", ""),
-                row.get("cliente", ""),
-            ])
+        columnas_monetarias = {
+            item[0]
+            for item in self.COLUMNS
+            if len(item) > 3 and item[3] == "moneda"
+        }
 
-        for cell in worksheet["E"][1:] + worksheet["F"][1:]:
-            cell.number_format = '#,##0.00'
-        for cell in worksheet["G"][1:]:
-            cell.number_format = '0.00" %"'
+        for row in self._rows:
+            valores_excel = []
+            for item in self.COLUMNS:
+                cid = item[0]
+                if cid in columnas_monetarias:
+                    valores_excel.append(
+                        float(_to_decimal(row.get(cid)))
+                    )
+                else:
+                    valores_excel.append(row.get(cid, ""))
+            worksheet.append(valores_excel)
+
+        for idx, item in enumerate(self.COLUMNS, start=1):
+            cid = item[0]
+            if cid not in columnas_monetarias:
+                continue
+            col_letter = worksheet.cell(
+                row=1,
+                column=idx,
+            ).column_letter
+            for cell in worksheet[col_letter][1:]:
+                cell.number_format = '#,##0.00'
         for column_cells in worksheet.columns:
             column_letter = column_cells[0].column_letter
             worksheet.column_dimensions[column_letter].width = min(
@@ -1277,25 +1458,115 @@ class TableroFacturacion(tk.Frame):
         )
 
     def _agregar_fila(self):
-        fila = {
-            "fecha": "",
-            "tipo_doc": "Cuota - Sanitas Perú S.A.",
-            "nro_documento": "",
-            "doc_legal": "",
-            "monto_doc": Decimal("0"),
-            "monto_comision": Decimal("0"),
-            "porcentaje_comision": Decimal("23.00"),
-            "identificacion": "",
-            "cliente": "",
-        }
+        if self._excel_formato_actual == "crecer":
+            fila = {
+                "correlativo": "",
+                "producto": "",
+                "movimiento": "",
+                "poliza": "",
+                "contratante": "",
+                "fecha_registro": "",
+                "prima_total": Decimal("0"),
+                "medio_pago": "",
+                "nro_comprobante": "",
+                "codigo_pago": "",
+                "estado_pago": "",
+                "fecha_pago": "",
+                "fecha": "",
+                "tipo_doc": "",
+                "nro_documento": "",
+                "doc_legal": "",
+                "monto_doc": Decimal("0"),
+                "monto_comision": Decimal("0"),
+                "porcentaje_comision": Decimal("0"),
+                "cliente": "",
+            }
+        else:
+            fila = {
+                "compania": "SANITAS PERU S.A. - EPS",
+                "ruc": "",
+                "contratante": "",
+                "contrato": "",
+                "fecha_emision": "",
+                "documento": "",
+                "inicio_vigencia": "",
+                "fin_vigencia": "",
+                "fecha_comprobante": "",
+                "comprobante": "",
+                "fecha_vencimiento": "",
+                "estado_pago": "",
+                "fecha_pago": "",
+                "cip": "",
+                "importe_original": Decimal("0"),
+                "importe_abonado": Decimal("0"),
+                "saldo": Decimal("0"),
+                "fecha": "",
+                "tipo_doc": "SANITAS PERU S.A. - EPS",
+                "nro_documento": "",
+                "doc_legal": "",
+                "monto_doc": Decimal("0"),
+                "monto_comision": Decimal("0"),
+                "porcentaje_comision": Decimal("23.00"),
+                "identificacion": "",
+                "cliente": "",
+            }
         self._append_row(fila)
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._actualizar_leyenda_conteos(0, 0, 0, 0)
         self._actualizar_totales()
 
     def _append_row(self, f: Dict[str, Any]):
         self._uid_counter += 1
         uid = f"r{self._uid_counter}"
         data = dict(f)
+        data.setdefault("compania", data.get("tipo_doc", ""))
+        data.setdefault("ruc", data.get("identificacion", ""))
+        data.setdefault("contratante", data.get("cliente", ""))
+        data.setdefault("contrato", "")
+        data.setdefault("fecha_emision", data.get("fecha", ""))
+        data.setdefault("documento", data.get("nro_documento", ""))
+        data.setdefault(
+            "documento_validacion",
+            data.get("nro_documento_validacion", ""),
+        )
+        data.setdefault("inicio_vigencia", data.get("fecha", ""))
+        data.setdefault("fin_vigencia", "")
+        data.setdefault("fecha_comprobante", "")
+        data.setdefault("comprobante", data.get("doc_legal", ""))
+        data.setdefault("fecha_vencimiento", "")
+        data.setdefault("estado_pago", "")
+        data.setdefault("fecha_pago", "")
+        data.setdefault("cip", "")
+        data.setdefault("importe_original", data.get("monto_doc", Decimal("0")))
+        data.setdefault("importe_abonado", Decimal("0"))
+        data.setdefault("saldo", Decimal("0"))
+
+        data.setdefault("fecha", data.get("inicio_vigencia", ""))
+        data.setdefault("tipo_doc", data.get("compania", ""))
+        data.setdefault("nro_documento", data.get("documento", ""))
+        data.setdefault(
+            "nro_documento_validacion",
+            data.get("documento_validacion", ""),
+        )
+        data.setdefault("doc_legal", data.get("comprobante", ""))
+        data.setdefault("identificacion", data.get("ruc", ""))
+        data.setdefault("cliente", data.get("contratante", ""))
+        data.setdefault("correlativo", "")
+        data.setdefault("producto", data.get("tipo_doc", ""))
+        data.setdefault("movimiento", "")
+        data.setdefault("poliza", data.get("nro_documento", ""))
+        data.setdefault("fecha_registro", data.get("fecha", ""))
+        data.setdefault("prima_total", data.get("monto_doc", Decimal("0")))
+        data.setdefault("medio_pago", "")
+        data.setdefault("nro_comprobante", data.get("doc_legal", ""))
+        data.setdefault("codigo_pago", "")
+
+        data["importe_original"] = _round2(_to_decimal(data.get("importe_original")))
+        data["importe_abonado"] = _round2(_to_decimal(data.get("importe_abonado")))
+        data["saldo"] = _round2(_to_decimal(data.get("saldo")))
+        data["prima_total"] = _round2(_to_decimal(data.get("prima_total")))
+        data["monto_doc"] = data["importe_original"]
+        if self._excel_formato_actual == "crecer":
+            data["monto_doc"] = data["prima_total"]
         data["monto_doc"] = _round2(_to_decimal(data.get("monto_doc")))
         data["monto_comision"] = _round2(_to_decimal(data.get("monto_comision")))
         data["porcentaje_comision"] = _round2(_to_decimal(data.get("porcentaje_comision")))
@@ -1377,18 +1648,18 @@ class TableroFacturacion(tk.Frame):
         cant_verde = 0
         cant_amarillo = 0
         cant_rojo = 0
+        cant_morado = 0
 
         for i, res in enumerate(resultados):
             if i >= len(iids):
                 break
-            existe_recibo = res.get("existe_recibo", False)
-            existe_factura = res.get("existe_factura", False)
 
-            if existe_recibo and existe_factura:
-                tag = "verde"
+            tag = str(res.get("estado_color") or "").strip().lower()
+            if tag == "morado":
+                cant_morado += 1
+            elif tag == "verde":
                 cant_verde += 1
-            elif existe_recibo and not existe_factura:
-                tag = "amarillo"
+            elif tag == "amarillo":
                 cant_amarillo += 1
             else:
                 tag = "rojo"
@@ -1396,7 +1667,12 @@ class TableroFacturacion(tk.Frame):
 
             self.tree.item(iids[i], tags=(tag,))
 
-        self._actualizar_leyenda_conteos(cant_verde, cant_amarillo, cant_rojo)
+        self._actualizar_leyenda_conteos(
+            cant_verde,
+            cant_amarillo,
+            cant_rojo,
+            cant_morado,
+        )
 
         total = len(self._rows)
         detalles_unicos = []
@@ -1406,10 +1682,14 @@ class TableroFacturacion(tk.Frame):
             detalles_unicos.append(f"Amarillo (R): {cant_amarillo}")
         if cant_rojo > 0:
             detalles_unicos.append(f"Rojo (---): {cant_rojo}")
+        if cant_morado > 0:
+            detalles_unicos.append(f"Morado (Anulados): {cant_morado}")
         resumen = "  |  ".join(detalles_unicos)
 
-        if cant_rojo == 0 and cant_amarillo == 0:
+        if cant_rojo == 0 and cant_amarillo == 0 and cant_morado == 0:
             fg_estado = "#0f766e"
+        elif cant_morado > 0:
+            fg_estado = "#6d28d9"
         elif cant_rojo > 0:
             fg_estado = "#dc2626"
         else:
@@ -1420,7 +1700,7 @@ class TableroFacturacion(tk.Frame):
             fg=fg_estado,
         )
 
-        if cant_rojo == 0 and cant_amarillo == 0:
+        if cant_rojo == 0 and cant_amarillo == 0 and cant_morado == 0:
             messagebox.showinfo(
                 "Validación exitosa",
                 f"Todas las {total} filas tienen RECIBO y FACTURA en la BD.\n"
@@ -1435,6 +1715,8 @@ class TableroFacturacion(tk.Frame):
                 detalles_msg.append(f"🟡 AMARILLO (Solo Recibo): {cant_amarillo}")
             if cant_rojo > 0:
                 detalles_msg.append(f"🔴 ROJO (Sin Recibo ni Factura): {cant_rojo}")
+            if cant_morado > 0:
+                detalles_msg.append(f"🟣 MORADO (Anulados): {cant_morado}")
             messagebox.showwarning(
                 "Validación con inconsistencias",
                 "Resultado de la validación:\n\n"
@@ -1471,7 +1753,9 @@ class TableroFacturacion(tk.Frame):
         editor.configure(
             background="#fef9c3",
             foreground="#0f172a",
-            justify="right" if col_id in {"monto_doc", "monto_comision", "porcentaje_comision"} else "left"
+            justify="right" if self._es_columna_tipo(col_id, "moneda")
+            or self._es_columna_tipo(col_id, "porcentaje")
+            else "left"
         )
         editor.place(x=x, y=y, width=w, height=h)
         self._editor = (editor, iid, col_index, col_id)
@@ -1504,12 +1788,50 @@ class TableroFacturacion(tk.Frame):
         if not (0 <= index < len(self._rows)):
             return
         row = self._rows[index]
-        if col_id in {"monto_doc", "monto_comision", "porcentaje_comision"}:
+        if (
+            self._es_columna_tipo(col_id, "moneda")
+            or self._es_columna_tipo(col_id, "porcentaje")
+        ):
             row[col_id] = _round2(_to_decimal(valor_nuevo))
         else:
             row[col_id] = valor_nuevo
+        if col_id == "documento":
+            row["nro_documento"] = row["documento"]
+            row["documento_validacion"] = row["documento"]
+            row["nro_documento_validacion"] = row["documento"]
+            try:
+                from views.bill_sanitas_excel import _limpiar_contrato
+                limpio = _limpiar_contrato(row["documento"])
+                row["documento_validacion"] = limpio
+                row["nro_documento_validacion"] = limpio
+            except Exception:
+                pass
+        elif col_id == "poliza":
+            row["nro_documento"] = row["poliza"]
+            row["nro_documento_validacion"] = row["poliza"]
+        elif col_id == "comprobante":
+            row["doc_legal"] = row["comprobante"]
+        elif col_id == "nro_comprobante":
+            row["doc_legal"] = row["nro_comprobante"]
+            row["doc_legal_validacion"] = row["nro_comprobante"]
+        elif col_id == "ruc":
+            row["identificacion"] = row["ruc"]
+        elif col_id == "contratante":
+            row["cliente"] = row["contratante"]
+        elif col_id == "compania":
+            row["tipo_doc"] = row["compania"]
+        elif col_id == "producto":
+            row["tipo_doc"] = row["producto"]
+        elif col_id == "fecha_registro":
+            row["fecha"] = row["fecha_registro"]
+        elif col_id == "inicio_vigencia":
+            row["fecha"] = row["inicio_vigencia"]
+        elif col_id == "importe_original":
+            row["monto_doc"] = row["importe_original"]
+        elif col_id == "prima_total":
+            row["monto_doc"] = row["prima_total"]
         self.tree.item(iid, values=self._valores_tabla(row))
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._actualizar_leyenda_conteos(0, 0, 0, 0)
         self._actualizar_totales()
 
     # --- Helpers

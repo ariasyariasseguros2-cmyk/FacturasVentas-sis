@@ -9,6 +9,7 @@ SIS_KEY = "MiPassphraseSegura$$2025"
 COLOR_VERDE = "#dcfce7"
 COLOR_AMARILLO = "#fef3c7"
 COLOR_ROJO = "#fee2e2"
+COLOR_MORADO = "#ede9fe"
 
 COLOR_EXISTE = COLOR_VERDE
 COLOR_NO_EXISTE = COLOR_ROJO
@@ -48,82 +49,254 @@ def _condicion_plana_norm(col: str, valor_norm: str) -> Tuple[str, Tuple[str]]:
     return sql, (valor_norm,)
 
 
-def _buscar_masivo_cifrado(
+def _merge_estado(
+    destino: Dict[str, Dict[str, bool]],
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, bool]]:
+    for row in (rows or []):
+        valor = str(row.get("val") or "").strip()
+        if not valor:
+            continue
+
+        estado = destino.setdefault(
+            valor,
+            {
+                "existe_activo": False,
+                "tiene_factura_bd": False,
+                "esta_anulado": False,
+            },
+        )
+        estado["existe_activo"] = (
+            estado["existe_activo"]
+            or bool(row.get("existe_activo"))
+        )
+        estado["tiene_factura_bd"] = (
+            estado["tiene_factura_bd"]
+            or bool(row.get("tiene_factura_bd"))
+        )
+        estado["esta_anulado"] = (
+            estado["esta_anulado"]
+            or bool(row.get("esta_anulado"))
+        )
+    return destino
+
+
+def _buscar_estado_nro_documento(
     bd: ConexionBD,
     pre: List[Tuple[str, Tuple[Any, ...]]],
-    tabla_col: str,
     valores: List[str],
-) -> Set[str]:
-    """
-    Busca MASIVAMENTE una lista de valores en una columna CIFRADA usando IN (...).
-    Usa un SUBQUERY wrapper para que MySQL materialice el descifrado correctamente.
-    Devuelve el set de valores NORMALIZADOS que SÍ existen en la columna.
-    """
+) -> Dict[str, Dict[str, bool]]:
     if not valores:
-        return set()
-
-    alias, tabla, col = _alias_tabla(tabla_col)
-    expr_col = _DECRYPT_TPL.format(col=f"{alias}.{col}")
-    norm_expr = f"UPPER(REPLACE(REPLACE({expr_col}, ' ', ''), 'Ñ', 'N'))"
+        return {}
 
     placeholders = ", ".join(["%s"] * len(valores))
-    sql = (
-        f"SELECT DISTINCT sub.val FROM ("
-        f"  SELECT {norm_expr} AS val FROM {tabla} {alias}"
-        f") sub "
-        f"WHERE sub.val IN ({placeholders})"
-    )
-    params = (SIS_KEY,) + tuple(valores)
+    sql = f"""
+        SELECT
+            sub.val,
+            MAX(sub.existe_activo) AS existe_activo,
+            MAX(sub.tiene_factura_bd) AS tiene_factura_bd,
+            MAX(sub.esta_anulado) AS esta_anulado
+        FROM (
+            SELECT
+                UPPER(REPLACE(REPLACE(
+                    CAST(AES_DECRYPT(FROM_BASE64(p.recibo), %s) AS CHAR),
+                    ' ',
+                    ''
+                ), 'Ñ', 'N')) AS val,
+                CASE
+                    WHEN COALESCE(p.activo, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                    THEN 1 ELSE 0
+                END AS existe_activo,
+                CASE
+                    WHEN COALESCE(p.activo, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                     AND NULLIF(TRIM(c.factura), '') IS NOT NULL
+                    THEN 1 ELSE 0
+                END AS tiene_factura_bd,
+                CASE
+                    WHEN COALESCE(p.anulado, 0) = 1
+                     OR COALESCE(p.prima_anulada, 0) = 1
+                     OR COALESCE(c.anular, 1) = 0
+                    THEN 1 ELSE 0
+                END AS esta_anulado
+            FROM polizas p
+            LEFT JOIN cuotas c ON c.poliza_id = p.idPoliza
+
+            UNION ALL
+
+            SELECT
+                UPPER(REPLACE(REPLACE(
+                    CAST(AES_DECRYPT(FROM_BASE64(p.poliza), %s) AS CHAR),
+                    ' ',
+                    ''
+                ), 'Ñ', 'N')) AS val,
+                CASE
+                    WHEN COALESCE(p.activo, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                    THEN 1 ELSE 0
+                END AS existe_activo,
+                CASE
+                    WHEN COALESCE(p.activo, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                     AND NULLIF(TRIM(c.factura), '') IS NOT NULL
+                    THEN 1 ELSE 0
+                END AS tiene_factura_bd,
+                CASE
+                    WHEN COALESCE(p.anulado, 0) = 1
+                     OR COALESCE(p.prima_anulada, 0) = 1
+                     OR COALESCE(c.anular, 1) = 0
+                    THEN 1 ELSE 0
+                END AS esta_anulado
+            FROM polizas p
+            LEFT JOIN cuotas c ON c.poliza_id = p.idPoliza
+
+            UNION ALL
+
+            SELECT
+                UPPER(REPLACE(REPLACE(
+                    CAST(AES_DECRYPT(FROM_BASE64(p.nro), %s) AS CHAR),
+                    ' ',
+                    ''
+                ), 'Ñ', 'N')) AS val,
+                CASE
+                    WHEN COALESCE(p.activo, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                    THEN 1 ELSE 0
+                END AS existe_activo,
+                CASE
+                    WHEN COALESCE(p.activo, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                     AND NULLIF(TRIM(c.factura), '') IS NOT NULL
+                    THEN 1 ELSE 0
+                END AS tiene_factura_bd,
+                CASE
+                    WHEN COALESCE(p.anulado, 0) = 1
+                     OR COALESCE(p.prima_anulada, 0) = 1
+                     OR COALESCE(c.anular, 1) = 0
+                    THEN 1 ELSE 0
+                END AS esta_anulado
+            FROM polizas p
+            LEFT JOIN cuotas c ON c.poliza_id = p.idPoliza
+
+            UNION ALL
+
+            SELECT
+                UPPER(REPLACE(REPLACE(
+                    CAST(AES_DECRYPT(FROM_BASE64(c.cupon), %s) AS CHAR),
+                    ' ',
+                    ''
+                ), 'Ñ', 'N')) AS val,
+                CASE
+                    WHEN COALESCE(c.activo, 1) = 1
+                     AND COALESCE(c.anular, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                    THEN 1 ELSE 0
+                END AS existe_activo,
+                CASE
+                    WHEN COALESCE(c.activo, 1) = 1
+                     AND COALESCE(c.anular, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                     AND NULLIF(TRIM(c.factura), '') IS NOT NULL
+                    THEN 1 ELSE 0
+                END AS tiene_factura_bd,
+                CASE
+                    WHEN COALESCE(c.anular, 1) = 0
+                     OR COALESCE(p.anulado, 0) = 1
+                     OR COALESCE(p.prima_anulada, 0) = 1
+                    THEN 1 ELSE 0
+                END AS esta_anulado
+            FROM cuotas c
+            LEFT JOIN polizas p ON p.idPoliza = c.poliza_id
+        ) sub
+        WHERE sub.val IN ({placeholders})
+        GROUP BY sub.val
+    """
+    params = (
+        SIS_KEY,
+        SIS_KEY,
+        SIS_KEY,
+        SIS_KEY,
+    ) + tuple(valores)
 
     try:
-        rows = bd.ejecutar_consulta(sql, params, solo_uno=False, pre_statements=pre)
+        rows = bd.ejecutar_consulta(
+            sql,
+            params,
+            solo_uno=False,
+            pre_statements=pre,
+        ) or []
     except Exception:
-        return set()
+        return {}
 
-    encontrados: Set[str] = set()
-    for row in (rows or []):
-        v = row.get("val")
-        if v is not None:
-            encontrados.add(str(v))
-    return encontrados
+    return _merge_estado({}, rows)
 
 
-def _buscar_masivo_plano(
+def _buscar_estado_doc_legal(
     bd: ConexionBD,
     pre: List[Tuple[str, Tuple[Any, ...]]],
-    tabla_col: str,
     valores: List[str],
-) -> Set[str]:
-    """
-    Busca MASIVAMENTE una lista de valores en una columna PLANA (sin cifrar) usando IN (...).
-    Usa SUBQUERY wrapper para coherencia con el método cifrado y robustez.
-    Devuelve el set de valores NORMALIZADOS que SÍ existen.
-    """
+) -> Dict[str, Dict[str, bool]]:
     if not valores:
-        return set()
+        return {}
 
-    alias, tabla, col = _alias_tabla(tabla_col)
-    norm_expr = f"UPPER(REPLACE(REPLACE({alias}.{col}, ' ', ''), 'Ñ', 'N'))"
     placeholders = ", ".join(["%s"] * len(valores))
-    sql = (
-        f"SELECT DISTINCT sub.val FROM ("
-        f"  SELECT {norm_expr} AS val FROM {tabla} {alias}"
-        f") sub "
-        f"WHERE sub.val IN ({placeholders})"
-    )
+    sql = f"""
+        SELECT
+            sub.val,
+            MAX(sub.existe_activo) AS existe_activo,
+            MAX(sub.tiene_factura_bd) AS tiene_factura_bd,
+            MAX(sub.esta_anulado) AS esta_anulado
+        FROM (
+            SELECT
+                UPPER(REPLACE(REPLACE(c.factura, ' ', ''), 'Ñ', 'N')) AS val,
+                CASE
+                    WHEN COALESCE(c.activo, 1) = 1
+                     AND COALESCE(c.anular, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                    THEN 1 ELSE 0
+                END AS existe_activo,
+                CASE
+                    WHEN COALESCE(c.activo, 1) = 1
+                     AND COALESCE(c.anular, 1) = 1
+                     AND COALESCE(p.anulado, 0) = 0
+                     AND COALESCE(p.prima_anulada, 0) = 0
+                    THEN 1 ELSE 0
+                END AS tiene_factura_bd,
+                CASE
+                    WHEN COALESCE(c.anular, 1) = 0
+                     OR COALESCE(p.anulado, 0) = 1
+                     OR COALESCE(p.prima_anulada, 0) = 1
+                    THEN 1 ELSE 0
+                END AS esta_anulado
+            FROM cuotas c
+            LEFT JOIN polizas p ON p.idPoliza = c.poliza_id
+        ) sub
+        WHERE sub.val IN ({placeholders})
+        GROUP BY sub.val
+    """
     params = tuple(valores)
 
     try:
-        rows = bd.ejecutar_consulta(sql, params, solo_uno=False, pre_statements=pre)
+        rows = bd.ejecutar_consulta(
+            sql,
+            params,
+            solo_uno=False,
+            pre_statements=pre,
+        ) or []
     except Exception:
-        return set()
+        return {}
 
-    encontrados: Set[str] = set()
-    for row in (rows or []):
-        v = row.get("val")
-        if v is not None:
-            encontrados.add(str(v))
-    return encontrados
+    return _merge_estado({}, rows)
 
 
 def validar_filas_contra_bd(
@@ -160,8 +333,20 @@ def validar_filas_contra_bd(
     set_doc_legales: Set[str] = set()
 
     for fila in filas:
-        nro_doc = _normalizar(fila.get("nro_documento", ""))
-        doc_legal = _normalizar(fila.get("doc_legal", ""))
+        nro_doc = _normalizar(
+            fila.get("nro_documento_validacion", "")
+            or fila.get("documento_validacion", "")
+            or fila.get("nro_documento", "")
+            or fila.get("documento", "")
+            or fila.get("poliza", "")
+        )
+        doc_legal = _normalizar(
+            fila.get("doc_legal_validacion", "")
+            or fila.get("doc_legal", "")
+            or fila.get("comprobante", "")
+            or fila.get("nro_comprobante", "")
+            or fila.get("codigo_pago", "")
+        )
         filas_normalizadas.append({"nro_doc": nro_doc, "doc_legal": doc_legal})
         if nro_doc:
             set_nro_docs.add(nro_doc)
@@ -175,18 +360,16 @@ def validar_filas_contra_bd(
     # PASO 2: Consultas MASIVAS (solo 7 consultas TOTALES, sin importar N de filas)
     # ================================================================
 
-    # --- Búsqueda masiva de NRO DOCUMENTO (4 columnas) ---
-    hits_recibo   = _buscar_masivo_cifrado(bd, pre, "p.recibo",   lista_nro_docs)
-    hits_poliza   = _buscar_masivo_cifrado(bd, pre, "p.poliza",   lista_nro_docs)
-    hits_nro      = _buscar_masivo_cifrado(bd, pre, "p.nro",      lista_nro_docs)
-    hits_cupon    = _buscar_masivo_cifrado(bd, pre, "c.cupon",    lista_nro_docs)
-    todos_hits_nro_doc = hits_recibo | hits_poliza | hits_nro | hits_cupon
-
-    # --- Búsqueda masiva de DOC LEGAL (3 columnas) ---
-    hits_numfact_cif  = _buscar_masivo_cifrado(bd, pre, "p.numero_factura", lista_doc_legales)
-    hits_numfact_plan = _buscar_masivo_plano(bd, pre,   "p.numero_factura", lista_doc_legales)
-    hits_cfactura     = _buscar_masivo_plano(bd, pre,   "c.factura",        lista_doc_legales)
-    todos_hits_doc_legal = hits_numfact_cif | hits_numfact_plan | hits_cfactura
+    estado_nro_doc = _buscar_estado_nro_documento(
+        bd,
+        pre,
+        lista_nro_docs,
+    )
+    estado_doc_legal = _buscar_estado_doc_legal(
+        bd,
+        pre,
+        lista_doc_legales,
+    )
 
     # ================================================================
     # PASO 3: Construir resultados (búsqueda en SET local — O(1))
@@ -199,36 +382,68 @@ def validar_filas_contra_bd(
         nro_doc = fn["nro_doc"]
         doc_legal = fn["doc_legal"]
 
-        existe_recibo = False
+        estado_nro = estado_nro_doc.get(
+            nro_doc,
+            {},
+        )
+        estado_doc = estado_doc_legal.get(
+            doc_legal,
+            {},
+        )
+
+        existe_recibo = bool(
+            estado_nro.get("existe_activo")
+        )
         existe_factura = False
         detalle_partes: List[str] = []
 
         if nro_doc:
-            existe_recibo = nro_doc in todos_hits_nro_doc
             if existe_recibo:
                 detalle_partes.append("Recibo OK")
             else:
                 detalle_partes.append("Recibo NO encontrado")
 
         if doc_legal:
-            existe_factura = doc_legal in todos_hits_doc_legal
+            existe_factura = bool(
+                estado_doc.get("existe_activo")
+            )
             if existe_factura:
                 detalle_partes.append("Factura OK")
             else:
                 detalle_partes.append("Factura NO encontrada")
+        elif nro_doc and bool(
+            estado_nro.get("tiene_factura_bd")
+        ):
+            existe_factura = True
+            detalle_partes.append(
+                "Factura encontrada en BD"
+            )
+
+        esta_anulado = bool(
+            estado_nro.get("esta_anulado")
+        ) or bool(
+            estado_doc.get("esta_anulado")
+        )
 
         tiene_algun_doc = bool(nro_doc or doc_legal)
 
-        if tiene_algun_doc:
-            if nro_doc and doc_legal:
-                existe_general = existe_recibo and existe_factura
-            elif nro_doc:
-                existe_general = existe_recibo
-            else:
-                existe_general = existe_factura
+        if not tiene_algun_doc:
+            existe_general = False
+            estado_color = "rojo"
+            detalle_partes.append("Sin documentos para validar")
+        elif esta_anulado:
+            existe_general = False
+            estado_color = "morado"
+            detalle_partes.append("Registro anulado en BD")
+        elif existe_recibo and existe_factura:
+            existe_general = True
+            estado_color = "verde"
+        elif existe_recibo:
+            existe_general = False
+            estado_color = "amarillo"
         else:
             existe_general = False
-            detalle_partes.append("Sin documentos para validar")
+            estado_color = "rojo"
 
         if existe_general:
             cant_existe += 1
@@ -239,6 +454,8 @@ def validar_filas_contra_bd(
             "existe_recibo": existe_recibo,
             "existe_factura": existe_factura,
             "existe_general": existe_general,
+            "estado_color": estado_color,
+            "esta_anulado": esta_anulado,
             "detalle": "  |  ".join(detalle_partes),
         })
 
@@ -276,18 +493,6 @@ def _buscar_nro_documento(bd: ConexionBD, pre, valor: str) -> bool:
 
 
 def _buscar_doc_legal(bd: ConexionBD, pre, valor: str) -> bool:
-    sql1, p1 = _condicion_cifrada_norm("p.numero_factura", valor)
-    q1 = f"SELECT 1 FROM polizas p WHERE {sql1} LIMIT 1"
-    r1 = bd.ejecutar_consulta(q1, p1, solo_uno=True, pre_statements=pre)
-    if r1:
-        return True
-
-    sql1b, p1b = _condicion_plana_norm("p.numero_factura", valor)
-    q1b = f"SELECT 1 FROM polizas p WHERE {sql1b} LIMIT 1"
-    r1b = bd.ejecutar_consulta(q1b, p1b, solo_uno=True, pre_statements=pre)
-    if r1b:
-        return True
-
     sql2, p2 = _condicion_plana_norm("c.factura", valor)
     q2 = f"SELECT 1 FROM cuotas c WHERE {sql2} LIMIT 1"
     r2 = bd.ejecutar_consulta(q2, p2, solo_uno=True, pre_statements=pre)

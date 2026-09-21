@@ -20,26 +20,60 @@ ESTADO_CUENTA_COLUMNS = (
     "estado_pago",
     "fecha_pago",
     "cip",
-    "importe",
+    "importe_original",
+    "importe_abonado",
+    "saldo",
 )
 
 
 _ESTADO_CUENTA_HEADERS = {
-    "compania": ("compania", "compania aseguradora"),
+    "compania": (
+        "compania",
+        "compania aseguradora",
+    ),
     "ruc": ("ruc",),
     "contratante": ("contratante",),
     "contrato": ("contrato",),
-    "fecha_emision": ("fecha emision",),
+    "fecha_emision": (
+        "fecha emision",
+        "fecha emisio",
+    ),
     "documento": ("documento",),
-    "inicio_vigencia": ("inicio vigencia",),
-    "fin_vigencia": ("fin vigencia",),
-    "fecha_comprobante": ("fecha comprobante",),
+    "inicio_vigencia": (
+        "inicio vigencia",
+        "inicio vigenc",
+        "inicio vigenci",
+    ),
+    "fin_vigencia": (
+        "fin vigencia",
+        "fin vigencia ",
+    ),
+    "fecha_comprobante": (
+        "fecha comprobante",
+        "fecha compr",
+    ),
     "comprobante": ("comprobante",),
-    "fecha_vencimiento": ("fecha vencimiento",),
-    "estado_pago": ("estado pago",),
+    "fecha_vencimiento": (
+        "fecha vencimiento",
+        "fecha venci",
+        "fecha vencim",
+    ),
+    "estado_pago": (
+        "estado pago",
+        "estado pago ",
+    ),
     "fecha_pago": ("fecha pago",),
     "cip": ("cip",),
-    "importe": ("importe",),
+    "importe_original": (
+        "importe original",
+        "importe origi",
+        "importe",
+    ),
+    "importe_abonado": (
+        "importe abonado",
+        "importe abon",
+    ),
+    "saldo": ("saldo",),
 }
 
 
@@ -148,7 +182,7 @@ def _limpiar_contrato(value: Any) -> str:
 def extraer_estado_cuenta_sanitas(
     excel_path: str
 ) -> List[Dict[str, Any]]:
-    
+
     try:
         from openpyxl import load_workbook
 
@@ -165,6 +199,7 @@ def extraer_estado_cuenta_sanitas(
     )
 
     try:
+        rows: List[Dict[str, Any]] = []
 
         for worksheet in workbook.worksheets:
 
@@ -201,10 +236,24 @@ def extraer_estado_cuenta_sanitas(
 
                             break
 
-                # Permitimos que falte como máximo un encabezado.
+                campos_base = {
+                    "compania",
+                    "documento",
+                    "comprobante",
+                    "importe_original",
+                }
+                campos_fecha = {
+                    "fecha_emision",
+                    "inicio_vigencia",
+                }
 
-                if len(candidate) >= (
-                    len(ESTADO_CUENTA_COLUMNS) - 1
+                if (
+                    campos_base.issubset(candidate)
+                    and any(
+                        campo in candidate
+                        for campo in campos_fecha
+                    )
+                    and len(candidate) >= 8
                 ):
 
                     header_row = row_number
@@ -217,8 +266,6 @@ def extraer_estado_cuenta_sanitas(
 
             if header_row is None:
                 continue
-
-            rows: List[Dict[str, Any]] = []
 
             # =====================================================
             # LEER FILAS
@@ -289,9 +336,17 @@ def extraer_estado_cuenta_sanitas(
                 # IMPORTE
                 # =================================================
 
-                result["importe"] = _formatear_importe_excel(
-                    values.get("importe")
-                )
+                for field in (
+                    "importe_original",
+                    "importe_abonado",
+                    "saldo",
+                ):
+                    result[field] = _formatear_importe_excel(
+                        values.get(field)
+                    )
+
+                # Compatibilidad con la lógica existente.
+                result["importe"] = result["importe_original"]
 
                 # =================================================
                 # CAMPOS DE TEXTO
@@ -301,6 +356,7 @@ def extraer_estado_cuenta_sanitas(
                     "compania",
                     "ruc",
                     "contratante",
+                    "contrato",
                     "documento",
                     "comprobante",
                     "estado_pago",
@@ -316,12 +372,18 @@ def extraer_estado_cuenta_sanitas(
                     )
 
                 # =================================================
-                # CONTRATO
+                # LIMPIAR DOCUMENTO PARA MOSTRAR Y VALIDAR
                 # =================================================
 
-                result["documento"] = _limpiar_contrato(
+                documento_limpio = _limpiar_contrato(
                     values.get("documento")
                 )
+                result["documento_original"] = result["documento"]
+                result["documento"] = (
+                    documento_limpio
+                    or result["documento"]
+                )
+                result["documento_validacion"] = result["documento"]
 
                 # =================================================
                 # AGREGAR FILA
@@ -329,6 +391,7 @@ def extraer_estado_cuenta_sanitas(
 
                 rows.append(result)
 
+        if rows:
             return rows
 
     finally:
@@ -356,7 +419,9 @@ def extraer_estado_cuenta_sanitas(
                 "Estado Pago",
                 "Fecha Pago",
                 "CIP",
-                "Importe",
+                "Importe Original",
+                "Importe Abonado",
+                "Saldo",
             )
         )
     )
