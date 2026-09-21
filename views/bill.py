@@ -941,6 +941,7 @@ class TableroFacturacion(tk.Frame):
         ("importe_original", "Importe Original", 120, "moneda"),
         ("importe_abonado", "Importe Abonado", 120, "moneda"),
         ("saldo", "Saldo", 100, "moneda"),
+        ("regla_validacion", "Regla", 170),
     )
     CRECER_COLUMNS = (
         ("correlativo", "CORRELATIVO", 95),
@@ -955,6 +956,7 @@ class TableroFacturacion(tk.Frame):
         ("codigo_pago", "CÓDIGO DE PAGO", 130),
         ("estado_pago", "ESTADO DE PAGO", 120),
         ("fecha_pago", "FECHA DE PAGO", 110),
+        ("regla_validacion", "Regla", 170),
     )
     COLUMNS = SANITAS_COLUMNS
 
@@ -1111,6 +1113,32 @@ class TableroFacturacion(tk.Frame):
             conteos["rojo"],
             conteos["morado"],
         )
+
+    def _texto_regla_validacion(
+        self,
+        estado_color: str,
+        detalle: str = "",
+    ) -> str:
+        estado = str(estado_color or "").strip().lower()
+        if self._excel_formato_actual == "crecer":
+            mapping = {
+                "verde": "Póliza + Comprobante",
+                "amarillo": "Solo hay Póliza",
+                "rojo": "Sin Póliza ni Comprobante",
+                "morado": "Anulados",
+            }
+        else:
+            mapping = {
+                "verde": "Recibo + Factura",
+                "amarillo": "Solo hay Recibo",
+                "rojo": "Sin Recibo ni Factura",
+                "morado": "Anulados",
+            }
+        if estado in mapping:
+            return mapping[estado]
+        if detalle:
+            return str(detalle).strip()
+        return "Pendiente de validar"
 
     def _es_columna_tipo(self, col_id: str, tipo_objetivo: str) -> bool:
         for item in self.COLUMNS:
@@ -1438,6 +1466,22 @@ class TableroFacturacion(tk.Frame):
                     valores_excel.append(row.get(cid, ""))
             worksheet.append(valores_excel)
 
+            tag = str(row.get("estado_color") or "").strip().lower()
+            if tag == "verde":
+                fill = PatternFill("solid", fgColor="DCFCE7")
+            elif tag == "amarillo":
+                fill = PatternFill("solid", fgColor="FEF3C7")
+            elif tag == "rojo":
+                fill = PatternFill("solid", fgColor="FEE2E2")
+            elif tag == "morado":
+                fill = PatternFill("solid", fgColor="EDE9FE")
+            else:
+                fill = None
+
+            if fill is not None:
+                for cell in worksheet[worksheet.max_row]:
+                    cell.fill = fill
+
         for idx, item in enumerate(self.COLUMNS, start=1):
             cid = item[0]
             if cid not in columnas_monetarias:
@@ -1500,6 +1544,7 @@ class TableroFacturacion(tk.Frame):
                 "monto_comision": Decimal("0"),
                 "porcentaje_comision": Decimal("0"),
                 "cliente": "",
+                "regla_validacion": "Pendiente de validar",
             }
         else:
             fila = {
@@ -1529,6 +1574,7 @@ class TableroFacturacion(tk.Frame):
                 "porcentaje_comision": Decimal("23.00"),
                 "identificacion": "",
                 "cliente": "",
+                "regla_validacion": "Pendiente de validar",
             }
         self._append_row(fila)
         self._actualizar_leyenda_conteos(0, 0, 0, 0)
@@ -1559,6 +1605,9 @@ class TableroFacturacion(tk.Frame):
         data.setdefault("importe_original", data.get("monto_doc", Decimal("0")))
         data.setdefault("importe_abonado", Decimal("0"))
         data.setdefault("saldo", Decimal("0"))
+        data.setdefault("estado_color", "")
+        data.setdefault("detalle_validacion", "")
+        data.setdefault("regla_validacion", "Pendiente de validar")
 
         data.setdefault("fecha", data.get("inicio_vigencia", ""))
         data.setdefault("tipo_doc", data.get("compania", ""))
@@ -1675,6 +1724,14 @@ class TableroFacturacion(tk.Frame):
                 break
 
             tag = str(res.get("estado_color") or "").strip().lower()
+            self._rows[i]["estado_color"] = tag
+            self._rows[i]["detalle_validacion"] = str(
+                res.get("detalle") or ""
+            ).strip()
+            self._rows[i]["regla_validacion"] = self._texto_regla_validacion(
+                tag,
+                self._rows[i]["detalle_validacion"],
+            )
             if tag == "morado":
                 cant_morado += 1
             elif tag == "verde":
@@ -1685,7 +1742,11 @@ class TableroFacturacion(tk.Frame):
                 tag = "rojo"
                 cant_rojo += 1
 
-            self.tree.item(iids[i], tags=(tag,))
+            self.tree.item(
+                iids[i],
+                values=self._valores_tabla(self._rows[i]),
+                tags=(tag,),
+            )
 
         self._actualizar_leyenda_conteos(
             cant_verde,
