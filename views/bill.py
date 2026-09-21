@@ -978,7 +978,9 @@ class TableroFacturacion(tk.Frame):
 
         btns = tk.Frame(parent, bg="#ffffff")
         btns.pack(side="right")
+        self._mkbtn(btns, "Exportar Excel", "#f97316", self._exportar_excel).pack(side="left", padx=3)
         self._mkbtn(btns, "Cargar PDF", "#2563eb", self._cargar_pdf).pack(side="left", padx=3)
+        self._mkbtn(btns, "Cargar Excel", "#7c3aed", self._cargar_excel).pack(side="left", padx=3)
         self._mkbtn(btns, "Validar BD", "#16a34a", self._validar_contra_bd).pack(side="left", padx=3)
         self._mkbtn(btns, "Nueva fila", "#0ea5e9", self._agregar_fila).pack(side="left", padx=3)
         self._mkbtn(btns, "Eliminar fila", "#ef4444", self._eliminar_fila).pack(side="left", padx=3)
@@ -1135,6 +1137,144 @@ class TableroFacturacion(tk.Frame):
         self.lbl_estado.configure(
             text=f"Importado: {len(filas)} filas desde {os.path.basename(path)}  |  Total registros: {len(self._rows)}",
             fg="#059669")
+
+    def _cargar_excel(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Seleccionar estado de cuenta Excel de Sanitas",
+            filetypes=[
+                ("Archivos Excel", "*.xlsx *.xlsm"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if not path:
+            return
+
+        try:
+            from views.bill_sanitas_excel import extraer_estado_cuenta_sanitas
+            filas_excel = extraer_estado_cuenta_sanitas(path)
+        except Exception as exc:
+            messagebox.showerror(
+                "Error al leer Excel",
+                f"No se pudo leer el estado de cuenta.\n\n{exc}",
+                parent=self,
+            )
+            return
+
+        if not filas_excel:
+            messagebox.showwarning(
+                "Sin datos",
+                "El archivo Excel no contiene filas de detalle.",
+                parent=self,
+            )
+            return
+
+        for fila_excel in filas_excel:
+            importe = _to_decimal(fila_excel.get("importe"))
+            self._append_row({
+                "fecha": fila_excel.get("fecha_emision", ""),
+                "tipo_doc": fila_excel.get("compania", ""),
+                "nro_documento": fila_excel.get("documento", ""),
+                "doc_legal": fila_excel.get("comprobante", ""),
+                "monto_doc": importe,
+                "monto_comision": Decimal("0"),
+                "porcentaje_comision": Decimal("0"),
+                "identificacion": fila_excel.get("ruc", ""),
+                "cliente": fila_excel.get("contratante", ""),
+            })
+
+        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._actualizar_totales()
+        self.lbl_estado.configure(
+            text=f"Importado: {len(filas_excel)} filas desde {os.path.basename(path)}  |  Total registros: {len(self._rows)}",
+            fg="#059669",
+        )
+
+    def _exportar_excel(self):
+        if not self._rows:
+            messagebox.showinfo(
+                "Exportar Excel",
+                "No hay filas para exportar.",
+                parent=self,
+            )
+            return
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill
+        except ImportError:
+            messagebox.showerror(
+                "Exportar Excel",
+                "Se requiere la librería 'openpyxl' para exportar a Excel.",
+                parent=self,
+            )
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Guardar reporte Excel",
+            defaultextension=".xlsx",
+            filetypes=[("Archivo Excel", "*.xlsx"), ("Todos los archivos", "*.*")],
+            initialfile="reporte_facturacion.xlsx",
+        )
+        if not path:
+            return
+
+        headers = [item[1] for item in self.COLUMNS]
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Facturación"
+        worksheet.append(headers)
+
+        for cell in worksheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="2563EB")
+
+        for row in self._rows:
+            worksheet.append([
+                row.get("fecha", ""),
+                row.get("tipo_doc", ""),
+                row.get("nro_documento", ""),
+                row.get("doc_legal", ""),
+                float(_to_decimal(row.get("monto_doc"))),
+                float(_to_decimal(row.get("monto_comision"))),
+                float(_to_decimal(row.get("porcentaje_comision"))),
+                row.get("identificacion", ""),
+                row.get("cliente", ""),
+            ])
+
+        for cell in worksheet["E"][1:] + worksheet["F"][1:]:
+            cell.number_format = '#,##0.00'
+        for cell in worksheet["G"][1:]:
+            cell.number_format = '0.00" %"'
+        for column_cells in worksheet.columns:
+            column_letter = column_cells[0].column_letter
+            worksheet.column_dimensions[column_letter].width = min(
+                max(len(str(cell.value or "")) for cell in column_cells) + 2,
+                35,
+            )
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+
+        try:
+            workbook.save(path)
+        except Exception as exc:
+            messagebox.showerror(
+                "Error al exportar",
+                f"No se pudo guardar el archivo Excel.\n\n{exc}",
+                parent=self,
+            )
+            return
+
+        self.lbl_estado.configure(
+            text=f"Exportado: {len(self._rows)} filas a {os.path.basename(path)}",
+            fg="#059669",
+        )
+        messagebox.showinfo(
+            "Exportación completada",
+            f"Se exportaron {len(self._rows)} filas correctamente.",
+            parent=self,
+        )
 
     def _agregar_fila(self):
         fila = {
