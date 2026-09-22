@@ -68,6 +68,13 @@ def _normalizar_fecha_p(valor: str) -> str:
     return valor
 
 
+def _limpiar_documento_p(valor: str) -> str:
+    texto = (valor or "").strip()
+    if not texto:
+        return ""
+    return "".join(ch for ch in texto if ch.isdigit())
+
+
 def _simplificar_texto(texto: str) -> str:
     s = (texto or "").strip().lower()
     tabla = str.maketrans(
@@ -239,7 +246,7 @@ def _parsear_fila_asignada(campos: Dict[str, str], oficina_actual: str) -> Optio
         "oficina": oficina_actual,
         "ramo": campos.get("ramo", "").strip(),
         "poliza": fields_poliza if (fields_poliza := campos.get("poliza", "").strip()) else "",
-        "documento": fields_doc if (fields_doc := campos.get("documento", "").strip()) else "",
+        "documento": _limpiar_documento_p(campos.get("documento", "").strip()),
         "fecha": _normalizar_fecha_p(campos.get("fecha", "").strip()),
         "descripcion": descripcion,
         "prima_neta": _round2_p(_to_decimal_p(campos.get("prima_neta", "0"))),
@@ -255,7 +262,7 @@ def _parsear_fila_asignada(campos: Dict[str, str], oficina_actual: str) -> Optio
     if not fila["documento"]:
         m_doc = _DOC_RE_P.search(" ".join(campos.values()))
         if m_doc:
-            fila["documento"] = m_doc.group(0)
+            fila["documento"] = _limpiar_documento_p(m_doc.group(0))
 
     if fila["comision"] == 0 and fila["prima_neta"] > 0 and fila["porcentaje_comision"] > 0:
         fila["comision"] = _round2_p(
