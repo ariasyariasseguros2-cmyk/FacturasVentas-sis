@@ -310,20 +310,21 @@ class MainWindow(tk.Tk):
 
         cab_izq = tk.Frame(cabecera, bg=self.COLORS["content_bg"])
         cab_izq.pack(side="left", fill="y")
-        tk.Label(cab_izq, text="Panel Principal", bg=self.COLORS["content_bg"],
+        tk.Label(
+            cab_izq,
+            text="Panel Principal",
+            bg=self.COLORS["content_bg"],
             fg=self.COLORS["text_primary"],
-        font=("Segoe UI", 18, "bold")).pack(anchor="w")
+            font=("Segoe UI", 18, "bold"),
+        ).pack(anchor="w")
         subt = f"Bienvenido(a), {self.usuario.get('nombre', 'Usuario')}  —  Hoy es {self._hoy_texto()}"
-        tk.Label(cab_izq, text=subt, bg=self.COLORS["content_bg"],
+        tk.Label(
+            cab_izq,
+            text=subt,
+            bg=self.COLORS["content_bg"],
             fg=self.COLORS["text_secondary"],
-            font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 12))
-        tk.Label(cabecera, text="Panel Principal", bg=self.COLORS["content_bg"],
-            fg=self.COLORS["text_primary"],
-            font=("Segoe UI", 18, "bold")).pack(anchor="w")
-        subt = f"Bienvenido(a), {self.usuario.get('nombre', 'Usuario')}  —  Hoy es {self._hoy_texto()}"
-        tk.Label(cabecera, text=subt, bg=self.COLORS["content_bg"],
-                 fg=self.COLORS["text_secondary"],
-                 font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 12))
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", pady=(2, 12))
 
         tarjetas_row = tk.Frame(page, bg=self.COLORS["content_bg"])
         tarjetas_row.pack(fill="x")

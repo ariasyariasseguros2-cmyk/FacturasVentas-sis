@@ -965,16 +965,21 @@ class TableroFacturacion(tk.Frame):
         self._editor: Optional[Tuple[ttk.Entry, str, int, str]] = None
         self._rows: List[Dict[str, Any]] = []
         self._uid_counter = 0
+        self._botones_accion: List[Tuple[tk.Button, str, str]] = []
+        self._layout_job = None
+        self._tree_height_actual = None
         self.COLUMNS = self.SANITAS_COLUMNS
         self._excel_formato_actual = "sanitas"
         self.configure(bg="#f1f5f9")
         self._construir()
+        self.bind("<Configure>", self._programar_layout_responsivo)
+        self.bind("<Map>", self._programar_layout_responsivo)
 
     def _construir(self):
         wrap = tk.Frame(self, bg="#ffffff", highlightbackground="#e2e8f0", highlightthickness=1)
         wrap.pack(fill="both", expand=True, padx=2, pady=2)
         inner = tk.Frame(wrap, bg="#ffffff")
-        inner.pack(fill="both", expand=True, padx=12, pady=12)
+        inner.pack(fill="both", expand=True, padx=10, pady=10)
 
         header = tk.Frame(inner, bg="#ffffff")
         header.pack(fill="x")
@@ -995,31 +1000,118 @@ class TableroFacturacion(tk.Frame):
         self.lbl_estado = tk.Label(inner, text="Listo. Cargue un PDF para empezar →",
                                    bg="#ffffff", fg="#64748b", font=("Segoe UI", 9), anchor="w")
         self.lbl_estado.pack(fill="x")
+        self.after(120, self._aplicar_layout_responsivo)
 
     def _crear_encabezado(self, parent):
-        title_box = tk.Frame(parent, bg="#ffffff")
-        title_box.pack(side="left")
-        tk.Label(title_box, text="Gestión de Comisiones — Facturas",
-                 bg="#ffffff", fg="#0f172a", font=("Segoe UI", 15, "bold")).pack(anchor="w")
-        tk.Label(title_box, text="Extraiga datos desde el PDF de Sanitas. Los valores se pueden editar.",
-                 bg="#ffffff", fg="#64748b", font=("Segoe UI", 10)).pack(anchor="w", pady=(2, 0))
+        self._header_parent = parent
+        parent.grid_columnconfigure(0, weight=1)
 
-        btns = tk.Frame(parent, bg="#ffffff")
-        btns.pack(side="right")
-        self._mkbtn(btns, "Exportar Excel", "#f97316", self._exportar_excel).pack(side="left", padx=3)
-        self._mkbtn(btns, "Cargar PDF", "#2563eb", self._cargar_pdf).pack(side="left", padx=3)
-        self._mkbtn(btns, "Cargar Excel", "#7c3aed", self._cargar_excel).pack(side="left", padx=3)
-        self._mkbtn(btns, "Validar BD", "#16a34a", self._validar_contra_bd).pack(side="left", padx=3)
-        self._mkbtn(btns, "Nueva fila", "#0ea5e9", self._agregar_fila).pack(side="left", padx=3)
-        self._mkbtn(btns, "Eliminar fila", "#ef4444", self._eliminar_fila).pack(side="left", padx=3)
-        self._mkbtn(btns, "Recalcular comisiones (23%)", "#0f766e", self._recalcular_comisiones_23).pack(side="left", padx=3)
-        self._mkbtn(btns, "Limpiar todo", "#475569", self._limpiar).pack(side="left", padx=3)
+        title_box = tk.Frame(parent, bg="#ffffff")
+        title_box.grid(row=0, column=0, sticky="w")
+        tk.Label(
+            title_box,
+            text="Gestión de Comisiones — Facturas",
+            bg="#ffffff",
+            fg="#0f172a",
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w")
+        self._lbl_subtitulo = tk.Label(
+            title_box,
+            text="Extraiga datos desde el PDF de Sanitas. Los valores se pueden editar.",
+            bg="#ffffff",
+            fg="#64748b",
+            font=("Segoe UI", 10),
+        )
+        self._lbl_subtitulo.pack(anchor="w", pady=(2, 0))
+
+        self._header_btns = tk.Frame(parent, bg="#ffffff")
+        self._header_btns.grid(row=0, column=1, sticky="e")
+
+        botones = [
+            ("Exportar Excel", "Exportar", "#f97316", self._exportar_excel),
+            ("Cargar PDF", "PDF", "#2563eb", self._cargar_pdf),
+            ("Cargar Excel", "Excel", "#7c3aed", self._cargar_excel),
+            ("Validar BD", "Validar", "#16a34a", self._validar_contra_bd),
+            ("Nueva fila", "Nueva fila", "#0ea5e9", self._agregar_fila),
+            ("Eliminar fila", "Eliminar", "#ef4444", self._eliminar_fila),
+            ("Recalcular comisiones (23%)", "Recalcular (23%)", "#0f766e", self._recalcular_comisiones_23),
+            ("Limpiar todo", "Limpiar", "#475569", self._limpiar),
+        ]
+        self._botones_accion.clear()
+        for texto, texto_corto, color, cmd in botones:
+            btn = self._mkbtn(self._header_btns, texto, color, cmd)
+            self._botones_accion.append((btn, texto, texto_corto))
+
+        parent.bind("<Configure>", self._programar_layout_responsivo)
+        self.after_idle(self._aplicar_layout_responsivo)
 
     def _mkbtn(self, parent, text, color, cmd):
         return tk.Button(parent, text=text, bg=color, fg="#ffffff",
                          font=("Segoe UI", 9, "bold"), relief="flat", bd=0,
                          cursor="hand2", activebackground="#1e293b", activeforeground="#ffffff",
                          padx=12, pady=7, command=cmd)
+
+    def _programar_layout_responsivo(self, _event=None):
+        if self._layout_job is not None:
+            try:
+                self.after_cancel(self._layout_job)
+            except Exception:
+                pass
+        self._layout_job = self.after(80, self._aplicar_layout_responsivo)
+
+    def _aplicar_layout_responsivo(self):
+        self._layout_job = None
+        ancho = max(self.winfo_width(), self.winfo_reqwidth())
+        alto = max(self.winfo_height(), self.winfo_reqheight())
+        if ancho <= 1 or alto <= 1:
+            return
+
+        self._reordenar_encabezado(ancho)
+        self._ajustar_altura_tabla(alto)
+
+    def _reordenar_encabezado(self, ancho: int):
+        if not hasattr(self, "_header_btns"):
+            return
+
+        compacto = ancho < 1360
+        apilado = ancho < 1500
+        columnas = 4 if ancho >= 1180 else 3
+
+        self._header_btns.grid_forget()
+        if apilado:
+            self._header_btns.grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        else:
+            self._header_btns.grid(row=0, column=1, sticky="e")
+
+        wraplength = max(320, ancho - 120)
+        self._lbl_subtitulo.configure(wraplength=wraplength)
+
+        for btn, texto, texto_corto in self._botones_accion:
+            btn.grid_forget()
+            btn.configure(
+                text=texto_corto if compacto else texto,
+                font=("Segoe UI", 8 if compacto else 9, "bold"),
+                padx=8 if compacto else 12,
+                pady=5 if compacto else 7,
+            )
+
+        for idx, (btn, _, _) in enumerate(self._botones_accion):
+            fila = idx // columnas if apilado else 0
+            columna = idx % columnas if apilado else idx
+            btn.grid(row=fila, column=columna, padx=3, pady=3, sticky="ew")
+
+        max_columnas = columnas if apilado else len(self._botones_accion)
+        for idx in range(max_columnas):
+            self._header_btns.grid_columnconfigure(idx, weight=0)
+
+    def _ajustar_altura_tabla(self, alto: int):
+        if not hasattr(self, "tree"):
+            return
+
+        filas = max(10, min(18, int((alto - 310) / 28)))
+        if filas != self._tree_height_actual:
+            self.tree.configure(height=filas)
+            self._tree_height_actual = filas
 
     def _construir_totales(self, parent):
         cards = [
@@ -1194,7 +1286,15 @@ class TableroFacturacion(tk.Frame):
         tv_frame.pack(fill="both", expand=True)
 
         cols = [c[0] for c in self.COLUMNS]
-        self.tree = ttk.Treeview(tv_frame, columns=cols, show="headings", selectmode="browse", height=18)
+        altura_inicial = max(10, min(16, int((self.winfo_toplevel().winfo_screenheight() - 310) / 28)))
+        self.tree = ttk.Treeview(
+            tv_frame,
+            columns=cols,
+            show="headings",
+            selectmode="browse",
+            height=altura_inicial,
+        )
+        self._tree_height_actual = altura_inicial
 
         self._aplicar_columnas_treeview()
 

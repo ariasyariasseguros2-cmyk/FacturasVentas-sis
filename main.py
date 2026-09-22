@@ -1,5 +1,6 @@
 import sys
 import os
+import ctypes
 import tkinter as tk
 from tkinter import messagebox
 from typing import Dict, Any
@@ -22,6 +23,22 @@ from controllers.auth_controller import AuthController
 from views.login import LoginWindow
 from views.main_window import MainWindow
 from utils.updater import APP_VERSION
+
+
+def _configurar_dpi_awareness():
+    if os.name != "nt":
+        return
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        return
+    except Exception:
+        pass
+
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -203,6 +220,7 @@ if __name__ == "__main__":
 
     try:
 
+        _configurar_dpi_awareness()
         app = App()
         app.iniciar()
 
