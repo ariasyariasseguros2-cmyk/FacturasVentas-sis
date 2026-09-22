@@ -269,15 +269,19 @@ def _parsear_fila_asignada(campos: Dict[str, str], oficina_actual: str) -> Optio
     return fila
 
 
-def _extraer_por_xranges_positiva(page) -> List[Dict[str, Any]]:
+def _extraer_por_xranges_positiva(
+    page,
+    oficina_inicial: str = "",
+    header_rangos_iniciales: Optional[List[Tuple[str, float, float]]] = None,
+) -> Tuple[List[Dict[str, Any]], str, List[Tuple[str, float, float]]]:
     palabras = page.extract_words(keep_blank_chars=False, x_tolerance=2, y_tolerance=3)
     if not palabras:
-        return []
+        return [], oficina_inicial, header_rangos_iniciales or []
 
     filas = _agrupar_palabras_por_fila(palabras)
     resultados: List[Dict[str, Any]] = []
-    oficina_actual = ""
-    header_rangos: List[Tuple[str, float, float]] = []
+    oficina_actual = oficina_inicial
+    header_rangos: List[Tuple[str, float, float]] = list(header_rangos_iniciales or [])
     ultima_fila: Optional[Dict[str, Any]] = None
 
     for _, palabras_fila in filas:
@@ -333,7 +337,7 @@ def _extraer_por_xranges_positiva(page) -> List[Dict[str, Any]]:
             if texto_restante not in descripcion_actual:
                 ultima_fila["descripcion"] = (descripcion_actual + " " + texto_restante).strip()
 
-    return resultados
+    return resultados, oficina_actual, header_rangos
 
 
 def _detectar_columnas_tabla_positiva(fila_encabezado) -> Optional[Dict[str, int]]:
@@ -415,9 +419,15 @@ def extraer_tablas_positiva(pdf_path: str) -> List[Dict[str, Any]]:
         raise RuntimeError("Se requiere la libreria 'pdfplumber' para extraer datos del PDF.")
 
     filas: List[Dict[str, Any]] = []
+    oficina_actual = ""
+    header_rangos: List[Tuple[str, float, float]] = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            page_filas = _extraer_por_xranges_positiva(page)
+            page_filas, oficina_actual, header_rangos = _extraer_por_xranges_positiva(
+                page,
+                oficina_actual,
+                header_rangos,
+            )
             if page_filas:
                 filas.extend(page_filas)
                 continue
