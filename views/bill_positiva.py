@@ -419,6 +419,38 @@ def _procesar_tabla_positiva(tabla) -> List[Dict[str, Any]]:
     return resultados
 
 
+def _consolidar_filas_positiva(filas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    consolidadas: List[Dict[str, Any]] = []
+    indice_por_clave: Dict[Tuple[str, ...], int] = {}
+
+    for fila in filas:
+        clave = (
+            str(fila.get("oficina", "")).strip(),
+            str(fila.get("ramo", "")).strip(),
+            str(fila.get("poliza", "")).strip(),
+            str(fila.get("documento", "")).strip(),
+            str(fila.get("fecha", "")).strip(),
+            str(fila.get("descripcion", "")).strip(),
+            str(_round2_p(_to_decimal_p(fila.get("prima_neta", "0")))),
+            str(_round2_p(_to_decimal_p(fila.get("porcentaje_comision", "0")))),
+        )
+        idx_existente = indice_por_clave.get(clave)
+        if idx_existente is None:
+            indice_por_clave[clave] = len(consolidadas)
+            nueva_fila = dict(fila)
+            nueva_fila["comision"] = _round2_p(_to_decimal_p(nueva_fila.get("comision", "0")))
+            consolidadas.append(nueva_fila)
+            continue
+
+        fila_existente = consolidadas[idx_existente]
+        fila_existente["comision"] = _round2_p(
+            _to_decimal_p(fila_existente.get("comision", "0"))
+            + _to_decimal_p(fila.get("comision", "0"))
+        )
+
+    return consolidadas
+
+
 def extraer_tablas_positiva(pdf_path: str) -> List[Dict[str, Any]]:
     try:
         import pdfplumber
@@ -474,7 +506,7 @@ def extraer_tablas_positiva(pdf_path: str) -> List[Dict[str, Any]]:
                     filas.extend(page_filas)
                     break
 
-    return filas
+    return _consolidar_filas_positiva(filas)
 
 
 class TableroFacturacionPositiva(tk.Frame):
