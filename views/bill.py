@@ -956,6 +956,7 @@ class TableroFacturacion(tk.Frame):
         ("codigo_pago", "CÓDIGO DE PAGO", 130),
         ("estado_pago", "ESTADO DE PAGO", 120),
         ("fecha_pago", "FECHA DE PAGO", 110),
+        ("usuario", "USUARIO", 220),
         ("regla_validacion", "Regla", 170),
     )
     COLUMNS = SANITAS_COLUMNS
@@ -1468,6 +1469,7 @@ class TableroFacturacion(tk.Frame):
             for fila_excel in filas_excel:
                 prima_total = _to_decimal(fila_excel.get("prima_total"))
                 self._append_row({
+                    "usuario": fila_excel.get("usuario", ""),
                     "correlativo": fila_excel.get("correlativo", ""),
                     "producto": fila_excel.get("producto", ""),
                     "movimiento": fila_excel.get("movimiento", ""),
@@ -1624,6 +1626,7 @@ class TableroFacturacion(tk.Frame):
     def _agregar_fila(self):
         if self._excel_formato_actual == "crecer":
             fila = {
+                "usuario": "",
                 "correlativo": "",
                 "producto": "",
                 "movimiento": "",
@@ -1719,6 +1722,7 @@ class TableroFacturacion(tk.Frame):
         data.setdefault("doc_legal", data.get("comprobante", ""))
         data.setdefault("identificacion", data.get("ruc", ""))
         data.setdefault("cliente", data.get("contratante", ""))
+        data.setdefault("usuario", "")
         data.setdefault("correlativo", "")
         data.setdefault("producto", data.get("tipo_doc", ""))
         data.setdefault("movimiento", "")

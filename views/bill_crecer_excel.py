@@ -7,6 +7,7 @@ from openpyxl import load_workbook
 
 # Columnas esperadas para el formato actual de Crecer
 ESTADO_CUENTA_COLUMNS = (
+    "USUARIO",
     "CORRELATIVO",
     "PRODUCTO",
     "MOVIMIENTO",
@@ -22,6 +23,7 @@ ESTADO_CUENTA_COLUMNS = (
 )
 
 _HEADER_HINTS = {
+    "USUARIO": ("USUARIO", "USUARI"),
     "CORRELATIVO": ("CORRELATIVO",),
     "PRODUCTO": ("PRODUCTO",),
     "MOVIMIENTO": ("MOVIMIENTO",),
@@ -157,6 +159,14 @@ def _detectar_headers(row: Any) -> Dict[str, int]:
     return detected
 
 
+def _puntaje_headers(detected: Dict[str, int], row_number: int) -> tuple:
+    return (
+        len(detected),
+        1 if "USUARIO" in detected else 0,
+        row_number,
+    )
+
+
 def extraer_estado_cuenta_crecer(excel_path: str) -> List[Dict[str, Any]]:
     workbook = load_workbook(
         filename=excel_path,
@@ -170,6 +180,9 @@ def extraer_estado_cuenta_crecer(excel_path: str) -> List[Dict[str, Any]]:
         for worksheet in workbook.worksheets:
             header_row_number = None
             mapa = {}
+            mejor_detectado_hoja: Dict[str, int] = {}
+            mejor_fila_hoja = None
+            mejor_puntaje_hoja = (-1, -1, -1)
 
             for row_number, row in enumerate(
                 worksheet.iter_rows(
@@ -185,15 +198,21 @@ def extraer_estado_cuenta_crecer(excel_path: str) -> List[Dict[str, Any]]:
                 detected = _detectar_headers(row)
                 if len(detected) > len(mejor_detectado):
                     mejor_detectado = detected
-                if len(detected) >= 4:
-                    header_row_number = row_number
-                    mapa = detected
-                    break
+                puntaje = _puntaje_headers(detected, row_number)
+                if puntaje > mejor_puntaje_hoja:
+                    mejor_detectado_hoja = detected
+                    mejor_fila_hoja = row_number
+                    mejor_puntaje_hoja = puntaje
+
+            if len(mejor_detectado_hoja) >= 4:
+                header_row_number = mejor_fila_hoja
+                mapa = mejor_detectado_hoja
 
             if header_row_number is None:
                 continue
 
             col_correlativo = mapa.get("CORRELATIVO")
+            col_usuario = mapa.get("USUARIO")
             col_producto = mapa.get("PRODUCTO")
             col_movimiento = mapa.get("MOVIMIENTO")
             col_poliza = mapa.get("POLIZA")
@@ -219,6 +238,7 @@ def extraer_estado_cuenta_crecer(excel_path: str) -> List[Dict[str, Any]]:
                     return row[col]
 
                 correlativo = _limpiar_texto(obtener(col_correlativo))
+                usuario = _limpiar_texto(obtener(col_usuario))
                 producto = _limpiar_texto(obtener(col_producto))
                 movimiento = _limpiar_texto(obtener(col_movimiento))
                 poliza = _limpiar_texto(obtener(col_poliza))
@@ -232,14 +252,14 @@ def extraer_estado_cuenta_crecer(excel_path: str) -> List[Dict[str, Any]]:
                 fecha_pago = _formatear_fecha(obtener(col_fecha_pago))
 
                 if not any([
-                    correlativo, producto, movimiento, poliza, contratante,
+                    usuario, correlativo, producto, movimiento, poliza, contratante,
                     fecha_registro, prima_total, medio_pago, nro_comprobante,
                     codigo_pago, estado_pago, fecha_pago
                 ]):
                     continue
 
                 texto_fila = " ".join([
-                    correlativo, producto, movimiento, poliza, contratante,
+                    usuario, correlativo, producto, movimiento, poliza, contratante,
                     medio_pago, nro_comprobante, codigo_pago, estado_pago
                 ]).upper()
 
@@ -247,6 +267,7 @@ def extraer_estado_cuenta_crecer(excel_path: str) -> List[Dict[str, Any]]:
                     continue
 
                 resultado.append({
+                    "usuario": usuario,
                     "correlativo": correlativo,
                     "producto": producto,
                     "movimiento": movimiento,
