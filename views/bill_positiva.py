@@ -1,5 +1,6 @@
 import os
 import re
+import threading
 import traceback
 from typing import Any, Dict, List, Optional, Tuple
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
@@ -7,12 +8,8 @@ from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from utils.validacion_bd import (
-    validar_filas_contra_bd,
-    COLOR_VERDE,
-    COLOR_AMARILLO,
-    COLOR_ROJO,
-)
+from utils.validacion_bd import COLOR_VERDE, COLOR_AMARILLO, COLOR_ROJO
+from utils.validacion_positiva_bd import validar_filas_contra_positiva_bd
 
 
 TWO_PLACES_P = Decimal("0.01")
@@ -572,6 +569,7 @@ class TableroFacturacionPositiva(tk.Frame):
         self._rows: List[Dict[str, Any]] = []
         self._uid_counter = 0
         self._totales_pdf: Optional[Dict[str, Decimal]] = None
+        self._validando_bd = False
         self.configure(bg="#f1f5f9")
         self._construir()
 
@@ -629,7 +627,8 @@ class TableroFacturacionPositiva(tk.Frame):
         btns.pack(side="right")
         self._mkbtn(btns, "Exportar Excel", "#f97316", self._exportar_excel).pack(side="left", padx=3)
         self._mkbtn(btns, "Cargar PDF Positiva", "#2563eb", self._cargar_pdf).pack(side="left", padx=3)
-        self._mkbtn(btns, "Validar BD", "#16a34a", self._validar_contra_bd).pack(side="left", padx=3)
+        self.btn_validar_bd = self._mkbtn(btns, "Validar BD", "#16a34a", self._validar_contra_bd)
+        self.btn_validar_bd.pack(side="left", padx=3)
         self._mkbtn(btns, "Nueva fila", "#0ea5e9", self._agregar_fila).pack(side="left", padx=3)
         self._mkbtn(btns, "Eliminar fila", "#ef4444", self._eliminar_fila).pack(side="left", padx=3)
         self._mkbtn(btns, "Recalcular comision", "#0f766e", self._recalcular_comision).pack(side="left", padx=3)
@@ -997,6 +996,8 @@ class TableroFacturacionPositiva(tk.Frame):
         )
 
     def _validar_contra_bd(self):
+        if self._validando_bd:
+            return
         if not self._rows:
             messagebox.showinfo(
                 "Validar BD",
@@ -1012,6 +1013,8 @@ class TableroFacturacionPositiva(tk.Frame):
         for r in self._rows:
             filas_para_validar.append(
                 {
+                    "poliza": r.get("poliza", ""),
+                    "cupon": r.get("documento", ""),
                     "fecha": r.get("fecha", ""),
                     "tipo_doc": r.get("ramo", "") or "COMI",
                     "nro_documento": r.get("poliza", ""),
@@ -1024,16 +1027,38 @@ class TableroFacturacionPositiva(tk.Frame):
                 }
             )
 
+        self._validando_bd = True
+        self.btn_validar_bd.configure(state="disabled")
+        self.lbl_estado.configure(text="Validando contra base de datos en segundo plano...", fg="#0284c7")
+        self.update_idletasks()
+
+        threading.Thread(
+            target=self._validar_contra_bd_worker,
+            args=(filas_para_validar,),
+            daemon=True,
+        ).start()
+
+    def _validar_contra_bd_worker(self, filas_para_validar):
         try:
-            resultados, _, _ = validar_filas_contra_bd(filas_para_validar)
+            resultados, _, _ = validar_filas_contra_positiva_bd(filas_para_validar)
+            self.after(0, lambda: self._aplicar_resultado_validacion_bd(resultados))
         except Exception as e:
-            messagebox.showerror(
-                "Error de validacion",
-                f"Ocurrio un error al validar contra la BD:\n\n{str(e)}\n\n{traceback.format_exc(limit=2)}",
-                parent=self,
-            )
-            self.lbl_estado.configure(text="Error al validar.", fg="#dc2626")
-            return
+            tb = traceback.format_exc(limit=2)
+            self.after(0, lambda: self._mostrar_error_validacion_bd(str(e), tb))
+
+    def _mostrar_error_validacion_bd(self, error, tb):
+        self._validando_bd = False
+        self.btn_validar_bd.configure(state="normal")
+        messagebox.showerror(
+            "Error de validacion",
+            f"Ocurrio un error al validar contra la BD:\n\n{error}\n\n{tb}",
+            parent=self,
+        )
+        self.lbl_estado.configure(text="Error al validar.", fg="#dc2626")
+
+    def _aplicar_resultado_validacion_bd(self, resultados):
+        self._validando_bd = False
+        self.btn_validar_bd.configure(state="normal")
 
         iids = self.tree.get_children()
         cant_verde = 0
