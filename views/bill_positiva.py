@@ -24,6 +24,7 @@ _FECHA_RE_P = re.compile(
 )
 _DOC_RE_P = re.compile(r"\b[A-Z]{1,3}\d{6,}[A-Z0-9\-]*\b")
 _MONTO_RE_P = re.compile(r"(?<!\d)(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?!\d)")
+_TOTAL_RE_P = re.compile(r"-?\d{1,3}(?:,\d{3})*\.\d{2}|-?\d+\.\d{2}")
 
 
 def _to_decimal_p(val: Any) -> Decimal:
@@ -73,6 +74,47 @@ def _limpiar_documento_p(valor: str) -> str:
     if not texto:
         return ""
     return "".join(ch for ch in texto if ch.isdigit())
+
+
+def _extraer_totales_pdf_positiva(pdf_path: str) -> Optional[Dict[str, Decimal]]:
+    try:
+        import pdfplumber
+    except Exception:
+        return None
+
+    totales: Dict[str, Decimal] = {}
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            texto = "\n".join((page.extract_text() or "") for page in pdf.pages)
+    except Exception:
+        return None
+
+    for linea in texto.splitlines():
+        bruto = linea.strip()
+        if not bruto or ":" not in bruto:
+            continue
+
+        simple = _simplificar_texto(bruto)
+        numeros = [_to_decimal_p(n) for n in _TOTAL_RE_P.findall(bruto)]
+        if not numeros:
+            continue
+
+        if simple.startswith("total oficina"):
+            totales["comision_total"] = numeros[0]
+        elif simple.startswith("total general"):
+            totales["total_cobrar"] = numeros[0]
+        elif simple.startswith("total neto"):
+            totales["base_igv"] = numeros[0]
+        elif simple.startswith("igv :"):
+            totales["igv_total"] = numeros[0]
+        elif simple.startswith("total :"):
+            totales["comision_total"] = numeros[0]
+            if len(numeros) > 1:
+                totales["descuento_total"] = numeros[1]
+
+    if {"comision_total", "base_igv", "igv_total", "total_cobrar"} <= set(totales):
+        return totales
+    return None
 
 
 def _simplificar_texto(texto: str) -> str:
@@ -529,6 +571,7 @@ class TableroFacturacionPositiva(tk.Frame):
         self._editor: Optional[Tuple[ttk.Entry, str, int, str]] = None
         self._rows: List[Dict[str, Any]] = []
         self._uid_counter = 0
+        self._totales_pdf: Optional[Dict[str, Decimal]] = None
         self.configure(bg="#f1f5f9")
         self._construir()
 
@@ -769,9 +812,11 @@ class TableroFacturacionPositiva(tk.Frame):
             self._actualizar_totales()
             return
 
+        usar_totales_pdf = not self._rows
         for fila in filas:
             self._append_row(fila)
 
+        self._totales_pdf = _extraer_totales_pdf_positiva(path) if usar_totales_pdf else None
         self._renumerar()
         self._actualizar_leyenda_conteos(0, 0, 0)
         self._actualizar_totales()
@@ -860,6 +905,7 @@ class TableroFacturacionPositiva(tk.Frame):
         )
 
     def _agregar_fila(self):
+        self._totales_pdf = None
         fila = {
             "oficina": "",
             "ramo": "",
@@ -901,6 +947,7 @@ class TableroFacturacionPositiva(tk.Frame):
             return
         if not messagebox.askyesno("Eliminar fila", f"¿Seguro que desea eliminar {len(sel)} fila(s)?", parent=self):
             return
+        self._totales_pdf = None
         idxs = []
         for iid in sel:
             try:
@@ -923,6 +970,7 @@ class TableroFacturacionPositiva(tk.Frame):
             return
         if not messagebox.askyesno("Limpiar", "¿Borrar todos los registros de la tabla?", parent=self):
             return
+        self._totales_pdf = None
         for iid in list(self.tree.get_children()):
             self.tree.delete(iid)
         self._rows.clear()
@@ -931,6 +979,7 @@ class TableroFacturacionPositiva(tk.Frame):
         self.lbl_estado.configure(text="Tabla limpiada.", fg="#64748b")
 
     def _recalcular_comision(self):
+        self._totales_pdf = None
         actualizadas = 0
         for i, row in enumerate(self._rows):
             prima = _to_decimal_p(row.get("prima_neta"))
@@ -1114,6 +1163,7 @@ class TableroFacturacionPositiva(tk.Frame):
         if not (0 <= index < len(self._rows)):
             return
         row = self._rows[index]
+        self._totales_pdf = None
         if col_id in {"prima_neta", "porcentaje_comision", "comision", "descuento"}:
             row[col_id] = _round2_p(_to_decimal_p(valor_nuevo))
         elif col_id == "fecha":
@@ -1144,14 +1194,24 @@ class TableroFacturacionPositiva(tk.Frame):
     def _actualizar_totales(self):
         prima_total = Decimal("0")
         comision_total = Decimal("0")
+        descuento_total = Decimal("0")
         for r in self._rows:
             prima_total += _to_decimal_p(r.get("prima_neta"))
             comision_total += _to_decimal_p(r.get("comision"))
+            descuento_total += _to_decimal_p(r.get("descuento"))
         prima_total = _round2_p(prima_total)
         comision_total = _round2_p(comision_total)
-        base_igv = comision_total
+        descuento_total = _round2_p(descuento_total)
+        base_igv = _round2_p(comision_total + descuento_total)
         igv_total = _round2_p(base_igv * IGV_PORCENTAJE_P)
         total_cobrar = _round2_p(base_igv + igv_total)
+
+        if self._totales_pdf:
+            comision_total = _round2_p(self._totales_pdf.get("comision_total", comision_total))
+            base_igv = _round2_p(self._totales_pdf.get("base_igv", base_igv))
+            igv_total = _round2_p(self._totales_pdf.get("igv_total", igv_total))
+            total_cobrar = _round2_p(self._totales_pdf.get("total_cobrar", total_cobrar))
+
         self._total_vars["prima_total"].set(f"{MONEDA_POSITIVA} {self._fmt_money(prima_total)}")
         self._total_vars["comision_total"].set(f"{MONEDA_POSITIVA} {self._fmt_money(comision_total)}")
         self._total_vars["base_igv"].set(f"{MONEDA_POSITIVA} {self._fmt_money(base_igv)}")
