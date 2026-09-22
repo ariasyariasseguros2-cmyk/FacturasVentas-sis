@@ -721,22 +721,34 @@ class TableroFacturacionPositiva(tk.Frame):
             sv = tk.StringVar(value="(0)")
             self._leyenda_vars[key] = sv
             tk.Label(item, textvariable=sv, bg="#f8fafc", fg=fg, font=("Segoe UI", 9, "bold")).pack(side="left")
-
-        tk.Label(
-            inner,
-            text="Regla BD: Verde = poliza + cupon + factura | Amarillo = poliza + cupon sin factura | Rojo = no coincide poliza + cupon.",
-            bg="#f8fafc",
-            fg="#64748b",
-            font=("Segoe UI", 8),
-            anchor="w",
-            justify="left",
-        ).pack(fill="x", pady=(6, 0))
-
     def _actualizar_leyenda_conteos(self, verde: int = 0, amarillo: int = 0, rojo: int = 0):
         if hasattr(self, "_leyenda_vars"):
             self._leyenda_vars["verde"].set(f"({verde})")
             self._leyenda_vars["amarillo"].set(f"({amarillo})")
             self._leyenda_vars["rojo"].set(f"({rojo})")
+
+    def _recalcular_leyenda_desde_tags(self):
+        cant_verde = 0
+        cant_amarillo = 0
+        cant_rojo = 0
+        for iid in self.tree.get_children():
+            tags = set(self.tree.item(iid, "tags") or ())
+            if "verde" in tags:
+                cant_verde += 1
+            elif "amarillo" in tags:
+                cant_amarillo += 1
+            elif "rojo" in tags:
+                cant_rojo += 1
+        self._actualizar_leyenda_conteos(cant_verde, cant_amarillo, cant_rojo)
+        return cant_verde, cant_amarillo, cant_rojo
+
+    def _limpiar_validacion_visual(self, mensaje: Optional[str] = None):
+        for iid in self.tree.get_children():
+            tags = tuple(tag for tag in (self.tree.item(iid, "tags") or ()) if tag not in {"verde", "amarillo", "rojo"})
+            self.tree.item(iid, tags=tags)
+        self._actualizar_leyenda_conteos(0, 0, 0)
+        if mensaje:
+            self.lbl_estado.configure(text=mensaje, fg="#64748b")
 
     def _construir_tabla(self, parent):
         tv_frame = tk.Frame(parent, bg="#ffffff")
@@ -836,7 +848,7 @@ class TableroFacturacionPositiva(tk.Frame):
 
         self._totales_pdf = _extraer_totales_pdf_positiva(path) if usar_totales_pdf else None
         self._renumerar()
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._limpiar_validacion_visual()
         self._actualizar_totales()
         self.lbl_estado.configure(
             text=f"Importado: {len(filas)} filas desde {os.path.basename(path)}  |  Total registros: {len(self._rows)}",
@@ -879,7 +891,7 @@ class TableroFacturacionPositiva(tk.Frame):
         if not path:
             return
 
-        headers = [item[1] for item in self.COLUMNS]
+        headers = [item[1] for item in self.COLUMNS] + ["Regla"]
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "La Positiva"
@@ -889,8 +901,41 @@ class TableroFacturacionPositiva(tk.Frame):
             cell.font = Font(bold=True, color="FFFFFF")
             cell.fill = PatternFill("solid", fgColor="0F172A")
 
+        estilos_validacion = {
+            "verde": {
+                "fill": PatternFill("solid", fgColor=COLOR_VERDE.replace("#", "")),
+                "font": Font(color="166534"),
+                "regla": "Poliza + Cupon + Factura",
+            },
+            "amarillo": {
+                "fill": PatternFill("solid", fgColor=COLOR_AMARILLO.replace("#", "")),
+                "font": Font(color="92400E"),
+                "regla": "Poliza + Cupon sin Factura",
+            },
+            "rojo": {
+                "fill": PatternFill("solid", fgColor=COLOR_ROJO.replace("#", "")),
+                "font": Font(color="991B1B"),
+                "regla": "No coincide Poliza + Cupon",
+            },
+        }
+
+        iids = list(self.tree.get_children())
         for pos, row in enumerate(self._rows, start=1):
-            worksheet.append(list(self._valores_tabla(row, pos)))
+            iid = iids[pos - 1] if pos - 1 < len(iids) else None
+            tags = set(self.tree.item(iid, "tags") or ()) if iid else set()
+            estilo = None
+            regla_bd = "Sin validar"
+            for tag in ("verde", "amarillo", "rojo"):
+                if tag in tags:
+                    estilo = estilos_validacion[tag]
+                    regla_bd = estilo["regla"]
+                    break
+            worksheet.append(list(self._valores_tabla(row, pos)) + [regla_bd])
+            excel_row = worksheet.max_row
+            if estilo:
+                for cell in worksheet[excel_row]:
+                    cell.fill = estilo["fill"]
+                    cell.font = estilo["font"]
 
         for column_cells in worksheet.columns:
             max_len = 0
@@ -938,7 +983,7 @@ class TableroFacturacionPositiva(tk.Frame):
         }
         self._append_row(fila)
         self._renumerar()
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._limpiar_validacion_visual("Nueva fila agregada. Revalide BD para actualizar colores.")
         self._actualizar_totales()
 
     def _append_row(self, fila: Dict[str, Any]):
@@ -980,7 +1025,7 @@ class TableroFacturacionPositiva(tk.Frame):
             if 0 <= idx < len(self._rows):
                 del self._rows[idx]
         self._renumerar()
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._limpiar_validacion_visual("Fila eliminada. Revalide BD para actualizar colores.")
         self._actualizar_totales()
 
     def _limpiar(self):
@@ -1007,7 +1052,7 @@ class TableroFacturacionPositiva(tk.Frame):
                 iid = self.tree.get_children()[i]
                 self.tree.item(iid, values=self._valores_tabla(row, i + 1))
                 actualizadas += 1
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._limpiar_validacion_visual("Comision recalculada. Revalide BD para actualizar colores.")
         self._actualizar_totales()
         self.lbl_estado.configure(
             text=f"Comision recalculada en {actualizadas} fila(s) usando Prima Neta y % Com.",
@@ -1102,7 +1147,7 @@ class TableroFacturacionPositiva(tk.Frame):
 
             self.tree.item(iids[i], tags=(tag,))
 
-        self._actualizar_leyenda_conteos(cant_verde, cant_amarillo, cant_rojo)
+        self._recalcular_leyenda_desde_tags()
 
         total = len(self._rows)
         detalles = []
@@ -1208,14 +1253,25 @@ class TableroFacturacionPositiva(tk.Frame):
             return
         row = self._rows[index]
         self._totales_pdf = None
+        valor_actual = row.get(col_id, "")
         if col_id in {"prima_neta", "porcentaje_comision", "comision", "descuento"}:
-            row[col_id] = _round2_p(_to_decimal_p(valor_nuevo))
+            valor_normalizado = _round2_p(_to_decimal_p(valor_nuevo))
+            if _round2_p(_to_decimal_p(valor_actual)) == valor_normalizado:
+                return
+            row[col_id] = valor_normalizado
         elif col_id == "fecha":
-            row[col_id] = _normalizar_fecha_p(valor_nuevo)
+            valor_normalizado = _normalizar_fecha_p(valor_nuevo)
+            if str(valor_actual or "") == valor_normalizado:
+                return
+            row[col_id] = valor_normalizado
         elif col_id != "nro_item":
+            if str(valor_actual or "") == valor_nuevo:
+                return
             row[col_id] = valor_nuevo
+        else:
+            return
         self.tree.item(iid, values=self._valores_tabla(row, index + 1))
-        self._actualizar_leyenda_conteos(0, 0, 0)
+        self._limpiar_validacion_visual("Fila editada. Revalide BD para actualizar colores.")
         self._actualizar_totales()
 
     def _valores_tabla(self, row: Dict[str, Any], nro_item: int = 0) -> Tuple[str, ...]:
