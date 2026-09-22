@@ -685,18 +685,27 @@ class TableroFacturacionPositiva(tk.Frame):
         inner = tk.Frame(wrap, bg="#f8fafc")
         inner.pack(fill="x", padx=10, pady=6)
 
-        tk.Label(inner, text="Leyenda:", bg="#f8fafc", fg="#334155", font=("Segoe UI", 9, "bold")).pack(side="left")
+        fila_leyenda = tk.Frame(inner, bg="#f8fafc")
+        fila_leyenda.pack(fill="x")
+
+        tk.Label(
+            fila_leyenda,
+            text="Leyenda:",
+            bg="#f8fafc",
+            fg="#334155",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side="left")
 
         reglas = [
-            ("verde", COLOR_VERDE, "#166534", "Poliza + Factura"),
-            ("amarillo", COLOR_AMARILLO, "#92400e", "Solo hay Poliza"),
-            ("rojo", COLOR_ROJO, "#991b1b", "Sin Poliza ni Factura"),
+            ("verde", COLOR_VERDE, "#166534", "Poliza + Cupon + Factura"),
+            ("amarillo", COLOR_AMARILLO, "#92400e", "Poliza + Cupon sin Factura"),
+            ("rojo", COLOR_ROJO, "#991b1b", "No coincide Poliza + Cupon"),
         ]
         self._leyenda_vars: Dict[str, tk.StringVar] = {}
         for i, (key, bg, fg, texto) in enumerate(reglas):
             if i > 0:
-                tk.Frame(inner, bg="#cbd5e1", width=1, height=18).pack(side="left", padx=10)
-            item = tk.Frame(inner, bg="#f8fafc")
+                tk.Frame(fila_leyenda, bg="#cbd5e1", width=1, height=18).pack(side="left", padx=10)
+            item = tk.Frame(fila_leyenda, bg="#f8fafc")
             item.pack(side="left", padx=(6 if i == 0 else 0, 0))
             tk.Label(
                 item,
@@ -712,6 +721,16 @@ class TableroFacturacionPositiva(tk.Frame):
             sv = tk.StringVar(value="(0)")
             self._leyenda_vars[key] = sv
             tk.Label(item, textvariable=sv, bg="#f8fafc", fg=fg, font=("Segoe UI", 9, "bold")).pack(side="left")
+
+        tk.Label(
+            inner,
+            text="Regla BD: Verde = poliza + cupon + factura | Amarillo = poliza + cupon sin factura | Rojo = no coincide poliza + cupon.",
+            bg="#f8fafc",
+            fg="#64748b",
+            font=("Segoe UI", 8),
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", pady=(6, 0))
 
     def _actualizar_leyenda_conteos(self, verde: int = 0, amarillo: int = 0, rojo: int = 0):
         if hasattr(self, "_leyenda_vars"):
@@ -1088,11 +1107,11 @@ class TableroFacturacionPositiva(tk.Frame):
         total = len(self._rows)
         detalles = []
         if cant_verde > 0:
-            detalles.append(f"Verde (Poliza + Factura): {cant_verde}")
+            detalles.append(f"Verde (Poliza + Cupon + Factura): {cant_verde}")
         if cant_amarillo > 0:
-            detalles.append(f"Amarillo (Solo Poliza): {cant_amarillo}")
+            detalles.append(f"Amarillo (Poliza + Cupon sin Factura): {cant_amarillo}")
         if cant_rojo > 0:
-            detalles.append(f"Rojo (Sin Poliza ni Factura): {cant_rojo}")
+            detalles.append(f"Rojo (No coincide Poliza + Cupon): {cant_rojo}")
         resumen = "  |  ".join(detalles)
 
         if cant_rojo == 0 and cant_amarillo == 0:
@@ -1110,17 +1129,17 @@ class TableroFacturacionPositiva(tk.Frame):
         if cant_rojo == 0 and cant_amarillo == 0:
             messagebox.showinfo(
                 "Validacion exitosa",
-                f"Todas las {total} filas tienen Poliza y Factura en la BD.\nTodas las filas estan en VERDE.",
+                f"Todas las {total} filas tienen Poliza + Cupon + Factura en la BD.\nTodas las filas estan en VERDE.",
                 parent=self,
             )
         else:
             detalles_msg = []
             if cant_verde > 0:
-                detalles_msg.append(f"VERDE (Poliza + Factura): {cant_verde}")
+                detalles_msg.append(f"VERDE (Poliza + Cupon + Factura): {cant_verde}")
             if cant_amarillo > 0:
-                detalles_msg.append(f"AMARILLO (Solo Poliza): {cant_amarillo}")
+                detalles_msg.append(f"AMARILLO (Poliza + Cupon sin Factura): {cant_amarillo}")
             if cant_rojo > 0:
-                detalles_msg.append(f"ROJO (Sin Poliza ni Factura): {cant_rojo}")
+                detalles_msg.append(f"ROJO (No coincide Poliza + Cupon): {cant_rojo}")
             messagebox.showwarning(
                 "Validacion con inconsistencias",
                 "Resultado de la validacion:\n\n" + "\n".join(detalles_msg),
