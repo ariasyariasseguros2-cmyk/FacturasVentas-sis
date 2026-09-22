@@ -159,6 +159,41 @@ def _detectar_headers(row: Any) -> Dict[str, int]:
     return detected
 
 
+def _es_fila_total_resumen(
+    row: Any,
+    correlativo: str,
+    poliza: str,
+    contratante: str,
+    nro_comprobante: str,
+    codigo_pago: str,
+) -> bool:
+    valores = [
+        _normalizar_header(cell)
+        for cell in row
+        if cell is not None and str(cell).strip()
+    ]
+    if not valores:
+        return False
+
+    primer_valor = valores[0]
+    es_marcador_total = (
+        primer_valor == "TOTAL"
+        or primer_valor.startswith("TOTAL ")
+        or primer_valor == "SUBTOTAL"
+        or primer_valor.startswith("SUBTOTAL ")
+        or primer_valor == "TOTAL GENERAL"
+    )
+    if not es_marcador_total:
+        return False
+
+    # Si hay identificadores reales de negocio, es una fila válida aunque
+    # una empresa tenga la palabra TOTAL en su nombre.
+    if any([correlativo, poliza, contratante, nro_comprobante, codigo_pago]):
+        return False
+
+    return True
+
+
 def _puntaje_headers(detected: Dict[str, int], row_number: int) -> tuple:
     return (
         len(detected),
@@ -258,12 +293,14 @@ def extraer_estado_cuenta_crecer(excel_path: str) -> List[Dict[str, Any]]:
                 ]):
                     continue
 
-                texto_fila = " ".join([
-                    usuario, correlativo, producto, movimiento, poliza, contratante,
-                    medio_pago, nro_comprobante, codigo_pago, estado_pago
-                ]).upper()
-
-                if "TOTAL" in texto_fila:
+                if _es_fila_total_resumen(
+                    row,
+                    correlativo,
+                    poliza,
+                    contratante,
+                    nro_comprobante,
+                    codigo_pago,
+                ):
                     continue
 
                 resultado.append({
