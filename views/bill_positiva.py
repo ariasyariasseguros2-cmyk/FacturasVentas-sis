@@ -584,6 +584,7 @@ class TableroFacturacionPositiva(tk.Frame):
 
         btns = tk.Frame(parent, bg="#ffffff")
         btns.pack(side="right")
+        self._mkbtn(btns, "Exportar Excel", "#f97316", self._exportar_excel).pack(side="left", padx=3)
         self._mkbtn(btns, "Cargar PDF Positiva", "#2563eb", self._cargar_pdf).pack(side="left", padx=3)
         self._mkbtn(btns, "Validar BD", "#16a34a", self._validar_contra_bd).pack(side="left", padx=3)
         self._mkbtn(btns, "Nueva fila", "#0ea5e9", self._agregar_fila).pack(side="left", padx=3)
@@ -782,6 +783,79 @@ class TableroFacturacionPositiva(tk.Frame):
             "PDF importado correctamente",
             f"Se insertaron {len(filas)} filas correctamente desde:\n{os.path.basename(path)}\n\n"
             f"Total de registros en la tabla: {len(self._rows)}",
+            parent=self,
+        )
+
+    def _exportar_excel(self):
+        if not self._rows:
+            messagebox.showinfo(
+                "Exportar Excel",
+                "No hay filas para exportar.",
+                parent=self,
+            )
+            return
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill
+        except ImportError:
+            messagebox.showerror(
+                "Exportar Excel",
+                "Se requiere la librería 'openpyxl' para exportar a Excel.",
+                parent=self,
+            )
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Guardar reporte Excel",
+            defaultextension=".xlsx",
+            filetypes=[("Archivo Excel", "*.xlsx"), ("Todos los archivos", "*.*")],
+            initialfile="reporte_positiva.xlsx",
+        )
+        if not path:
+            return
+
+        headers = [item[1] for item in self.COLUMNS]
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "La Positiva"
+        worksheet.append(headers)
+
+        for cell in worksheet[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="0F172A")
+
+        for pos, row in enumerate(self._rows, start=1):
+            worksheet.append(list(self._valores_tabla(row, pos)))
+
+        for column_cells in worksheet.columns:
+            max_len = 0
+            col_letter = column_cells[0].column_letter
+            for cell in column_cells:
+                try:
+                    max_len = max(max_len, len(str(cell.value or "")))
+                except Exception:
+                    pass
+            worksheet.column_dimensions[col_letter].width = min(max(max_len + 2, 10), 40)
+
+        try:
+            workbook.save(path)
+        except Exception as exc:
+            messagebox.showerror(
+                "Exportar Excel",
+                f"No se pudo guardar el archivo Excel.\n\n{exc}",
+                parent=self,
+            )
+            return
+
+        self.lbl_estado.configure(
+            text=f"Exportado: {len(self._rows)} filas a {os.path.basename(path)}",
+            fg="#059669",
+        )
+        messagebox.showinfo(
+            "Exportación completada",
+            f"Se exportaron {len(self._rows)} filas correctamente.",
             parent=self,
         )
 
