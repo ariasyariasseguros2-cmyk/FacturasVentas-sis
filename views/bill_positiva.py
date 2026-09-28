@@ -73,6 +73,14 @@ def _limpiar_documento_p(valor: str) -> str:
     return "".join(ch for ch in texto if ch.isdigit())
 
 
+def _descripciones_equivalentes(desc_a: str, desc_b: str) -> bool:
+    a = re.sub(r"\s{2,}", " ", (desc_a or "").strip().lower())
+    b = re.sub(r"\s{2,}", " ", (desc_b or "").strip().lower())
+    if not a or not b:
+        return a == b
+    return a == b or a in b or b in a
+
+
 def _extraer_totales_pdf_positiva(pdf_path: str) -> Optional[Dict[str, Decimal]]:
     try:
         import pdfplumber
@@ -281,6 +289,7 @@ def _es_oficina_positiva(texto: str) -> bool:
 
 def _parsear_fila_asignada(campos: Dict[str, str], oficina_actual: str) -> Optional[Dict[str, Any]]:
     descripcion = re.sub(r"\s{2,}", " ", campos.get("descripcion", "").strip())
+    comision_texto = campos.get("comision", "").strip()
     fila = {
         "oficina": oficina_actual,
         "ramo": campos.get("ramo", "").strip(),
@@ -303,7 +312,7 @@ def _parsear_fila_asignada(campos: Dict[str, str], oficina_actual: str) -> Optio
         if m_doc:
             fila["documento"] = _limpiar_documento_p(m_doc.group(0))
 
-    if fila["comision"] == 0 and fila["prima_neta"] > 0 and fila["porcentaje_comision"] > 0:
+    if not comision_texto and fila["prima_neta"] > 0 and fila["porcentaje_comision"] > 0:
         fila["comision"] = _round2_p(
             fila["prima_neta"] * fila["porcentaje_comision"] / Decimal("100")
         )
@@ -461,30 +470,61 @@ def _procesar_tabla_positiva(tabla) -> List[Dict[str, Any]]:
 def _consolidar_filas_positiva(filas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     consolidadas: List[Dict[str, Any]] = []
     indice_por_clave: Dict[Tuple[str, ...], int] = {}
+    filas_vistas: Dict[Tuple[str, ...], List[str]] = {}
 
     for fila in filas:
-        clave = (
+        firma_base = (
             str(fila.get("oficina", "")).strip(),
             str(fila.get("ramo", "")).strip(),
             str(fila.get("poliza", "")).strip(),
             str(fila.get("documento", "")).strip(),
             str(fila.get("fecha", "")).strip(),
-            str(fila.get("descripcion", "")).strip(),
             str(_round2_p(_to_decimal_p(fila.get("prima_neta", "0")))),
             str(_round2_p(_to_decimal_p(fila.get("porcentaje_comision", "0")))),
+            str(_round2_p(_to_decimal_p(fila.get("comision", "0")))),
+            str(_round2_p(_to_decimal_p(fila.get("descuento", "0")))),
         )
+        descripcion_actual = str(fila.get("descripcion", "")).strip()
+        descripciones_vistas = filas_vistas.setdefault(firma_base, [])
+        if any(_descripciones_equivalentes(descripcion_actual, desc) for desc in descripciones_vistas):
+            continue
+        descripciones_vistas.append(descripcion_actual)
+
+        poliza = str(fila.get("poliza", "")).strip()
+        documento = str(fila.get("documento", "")).strip()
+        if poliza or documento:
+            clave = (poliza, documento)
+        else:
+            clave = (
+                str(fila.get("oficina", "")).strip(),
+                str(fila.get("ramo", "")).strip(),
+                str(fila.get("fecha", "")).strip(),
+                str(fila.get("descripcion", "")).strip(),
+                str(_round2_p(_to_decimal_p(fila.get("prima_neta", "0")))),
+                str(_round2_p(_to_decimal_p(fila.get("porcentaje_comision", "0")))),
+            )
         idx_existente = indice_por_clave.get(clave)
         if idx_existente is None:
             indice_por_clave[clave] = len(consolidadas)
             nueva_fila = dict(fila)
+            nueva_fila["prima_neta"] = _round2_p(_to_decimal_p(nueva_fila.get("prima_neta", "0")))
             nueva_fila["comision"] = _round2_p(_to_decimal_p(nueva_fila.get("comision", "0")))
+            nueva_fila["descuento"] = _round2_p(_to_decimal_p(nueva_fila.get("descuento", "0")))
             consolidadas.append(nueva_fila)
             continue
 
         fila_existente = consolidadas[idx_existente]
+        desc_actual = str(fila_existente.get("descripcion", "")).strip()
+        desc_nueva = str(fila.get("descripcion", "")).strip()
+        if len(desc_nueva) > len(desc_actual):
+            fila_existente["descripcion"] = desc_nueva
         fila_existente["comision"] = _round2_p(
             _to_decimal_p(fila_existente.get("comision", "0"))
             + _to_decimal_p(fila.get("comision", "0"))
+        )
+        fila_existente["descuento"] = _round2_p(
+            _to_decimal_p(fila_existente.get("descuento", "0"))
+            + _to_decimal_p(fila.get("descuento", "0"))
         )
 
     return consolidadas
@@ -918,8 +958,18 @@ class TableroFacturacionPositiva(tk.Frame):
                 "regla": "No coincide Poliza + Cupon",
             },
         }
+        estilo_ajuste = {
+            "fill": PatternFill("solid", fgColor="E2E8F0"),
+            "font": Font(color="334155", bold=True),
+        }
+        estilo_resumen = {
+            "fill": PatternFill("solid", fgColor="DBEAFE"),
+            "font": Font(color="1E3A8A", bold=True),
+        }
 
         iids = list(self.tree.get_children())
+        suma_comision_exportada = Decimal("0")
+        suma_descuento_exportada = Decimal("0")
         for pos, row in enumerate(self._rows, start=1):
             iid = iids[pos - 1] if pos - 1 < len(iids) else None
             tags = set(self.tree.item(iid, "tags") or ()) if iid else set()
@@ -930,12 +980,107 @@ class TableroFacturacionPositiva(tk.Frame):
                     estilo = estilos_validacion[tag]
                     regla_bd = estilo["regla"]
                     break
-            worksheet.append(list(self._valores_tabla(row, pos)) + [regla_bd])
+            worksheet.append(list(self._valores_exportacion_excel(row, pos)) + [regla_bd])
+            suma_comision_exportada += _round2_p(_to_decimal_p(row.get("comision")))
+            suma_descuento_exportada += _round2_p(_to_decimal_p(row.get("descuento")))
             excel_row = worksheet.max_row
             if estilo:
                 for cell in worksheet[excel_row]:
                     cell.fill = estilo["fill"]
                     cell.font = estilo["font"]
+
+        ajuste_comision = Decimal("0.00")
+        ajuste_descuento = Decimal("0.00")
+        if self._totales_pdf:
+            if "comision_total" in self._totales_pdf:
+                ajuste_comision = _round2_p(_to_decimal_p(self._totales_pdf.get("comision_total")) - suma_comision_exportada)
+            if ajuste_comision != Decimal("0.00"):
+                worksheet.append([
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "AJUSTE TOTAL PDF",
+                    "",
+                    "",
+                    float(ajuste_comision),
+                    0.0,
+                ])
+                excel_row = worksheet.max_row
+                for cell in worksheet[excel_row]:
+                    cell.fill = estilo_ajuste["fill"]
+                    cell.font = estilo_ajuste["font"]
+            if "descuento_total" in self._totales_pdf:
+                ajuste_descuento = _round2_p(_to_decimal_p(self._totales_pdf.get("descuento_total")) - suma_descuento_exportada)
+            if ajuste_descuento != Decimal("0.00"):
+                worksheet.append([
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "DESCUENTO TOTAL PDF",
+                    "",
+                    "",
+                    0.0,
+                    float(ajuste_descuento),
+                    "Descuento oficial del PDF",
+                ])
+                excel_row = worksheet.max_row
+                for cell in worksheet[excel_row]:
+                    cell.fill = estilo_ajuste["fill"]
+                    cell.font = estilo_ajuste["font"]
+
+        total_comision_resumen = _round2_p(suma_comision_exportada + ajuste_comision)
+        total_descuento_resumen = _round2_p(suma_descuento_exportada + ajuste_descuento)
+        base_igv_resumen = _round2_p(total_comision_resumen + total_descuento_resumen)
+        igv_total_resumen = _round2_p(base_igv_resumen * IGV_PORCENTAJE_P)
+        total_cobrar_resumen = _round2_p(base_igv_resumen + igv_total_resumen)
+
+        if self._totales_pdf:
+            total_comision_resumen = _round2_p(_to_decimal_p(self._totales_pdf.get("comision_total", total_comision_resumen)))
+            total_descuento_resumen = _round2_p(_to_decimal_p(self._totales_pdf.get("descuento_total", total_descuento_resumen)))
+            base_igv_resumen = _round2_p(_to_decimal_p(self._totales_pdf.get("base_igv", base_igv_resumen)))
+            igv_total_resumen = _round2_p(_to_decimal_p(self._totales_pdf.get("igv_total", igv_total_resumen)))
+            total_cobrar_resumen = _round2_p(_to_decimal_p(self._totales_pdf.get("total_cobrar", total_cobrar_resumen)))
+
+        worksheet.append([""] * len(headers))
+        for descripcion, valor_comision, valor_descuento in (
+            ("TOTAL COMISION", total_comision_resumen, None),
+            ("TOTAL DESCUENTO", None, total_descuento_resumen),
+            ("BASE IGV (COMISION + DSCTO.)", base_igv_resumen, None),
+            ("IGV", igv_total_resumen, None),
+            ("TOTAL COBRAR", total_cobrar_resumen, None),
+        ):
+            worksheet.append([
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                descripcion,
+                "",
+                "",
+                "" if valor_comision is None else float(valor_comision),
+                "" if valor_descuento is None else float(valor_descuento),
+                "Resumen",
+            ])
+            excel_row = worksheet.max_row
+            for cell in worksheet[excel_row]:
+                cell.fill = estilo_resumen["fill"]
+                cell.font = estilo_resumen["font"]
+
+        columnas_moneda = {
+            idx + 1 for idx, item in enumerate(self.COLUMNS)
+            if len(item) > 3 and item[3] == "moneda"
+        }
+        for fila_excel in worksheet.iter_rows(min_row=2, max_row=worksheet.max_row):
+            for idx in columnas_moneda:
+                fila_excel[idx - 1].number_format = '#,##0.00;[Red]-#,##0.00'
 
         for column_cells in worksheet.columns:
             max_len = 0
@@ -1285,6 +1430,23 @@ class TableroFacturacionPositiva(tk.Frame):
             raw = row.get(cid, "")
             if tipo == "moneda":
                 values.append(f"{MONEDA_POSITIVA} {self._fmt_money(_to_decimal_p(raw))}")
+            elif tipo == "porcentaje":
+                values.append(f"{_round2_p(_to_decimal_p(raw)):.2f} %")
+            else:
+                values.append("" if raw is None else str(raw))
+        return tuple(values)
+
+    def _valores_exportacion_excel(self, row: Dict[str, Any], nro_item: int = 0) -> Tuple[Any, ...]:
+        values: List[Any] = []
+        for item in self.COLUMNS:
+            cid = item[0]
+            tipo = item[3] if len(item) > 3 else "text"
+            if cid == "nro_item":
+                values.append(int(nro_item))
+                continue
+            raw = row.get(cid, "")
+            if tipo == "moneda":
+                values.append(float(_round2_p(_to_decimal_p(raw))))
             elif tipo == "porcentaje":
                 values.append(f"{_round2_p(_to_decimal_p(raw)):.2f} %")
             else:
