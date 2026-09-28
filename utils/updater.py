@@ -40,6 +40,7 @@ VERSION_URL = (
 APP_EXE_NAME = "main.exe"
 
 REQUEST_TIMEOUT = 30
+VERSION_CACHE_TTL = 300
 
 # Permitir segundo intento SSL sin validación
 ALLOW_INSECURE_SSL = True
@@ -155,6 +156,306 @@ def obtener_directorio_updates() -> str:
     )
 
     return ruta
+
+
+# ============================================================
+# CACHE DE VERSION
+# ============================================================
+
+def _obtener_ruta_cache_version() -> str:
+
+    return os.path.join(
+        obtener_directorio_updates(),
+        "version_cache.json"
+    )
+
+
+def _guardar_cache_version(
+    remoto: Dict[str, Any]
+) -> None:
+
+    try:
+
+        payload = {
+            "timestamp": int(time.time()),
+            "app_version": APP_VERSION,
+            "remoto": remoto,
+        }
+
+        ruta_cache = _obtener_ruta_cache_version()
+
+        with open(
+            ruta_cache,
+            "w",
+            encoding="utf-8"
+        ) as f:
+
+            json.dump(
+                payload,
+                f,
+                ensure_ascii=False
+            )
+
+        _log(
+            f"CACHE VERSION GUARDADA: {ruta_cache}"
+        )
+
+    except Exception as e:
+
+        _log(
+            f"No se pudo guardar cache de version: {e}"
+        )
+
+
+def _leer_cache_version(
+    cache_ttl: int
+) -> Optional[Dict[str, Any]]:
+
+    try:
+
+        ruta_cache = _obtener_ruta_cache_version()
+
+        if not os.path.exists(
+            ruta_cache
+        ):
+
+            return None
+
+        with open(
+            ruta_cache,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            payload = json.load(f)
+
+        timestamp = int(
+            payload.get(
+                "timestamp",
+                0
+            )
+        )
+
+        app_version = str(
+            payload.get(
+                "app_version",
+                ""
+            )
+        ).strip()
+
+        remoto = payload.get(
+            "remoto"
+        )
+
+        edad = int(time.time()) - timestamp
+
+        if app_version != APP_VERSION:
+
+            _log(
+                "Cache descartada por cambio de version local."
+            )
+
+            return None
+
+        if edad < 0 or edad > cache_ttl:
+
+            _log(
+                f"Cache expirada: {edad}s"
+            )
+
+            return None
+
+        if not isinstance(
+            remoto,
+            dict
+        ):
+
+            return None
+
+        _log(
+            f"Usando cache version.json ({edad}s)"
+        )
+
+        return remoto
+
+    except Exception as e:
+
+        _log(
+            f"No se pudo leer cache de version: {e}"
+        )
+
+        return None
+
+
+def _procesar_version_remota(
+    remoto: Dict[str, Any]
+) -> Dict[str, Any]:
+
+    version_remota = str(
+        remoto.get(
+            "version",
+            ""
+        )
+    ).strip()
+
+    strategy = str(
+        remoto.get(
+            "strategy",
+            "zip_patch"
+        )
+    ).strip()
+
+    force_update = bool(
+        remoto.get(
+            "force_update",
+            False
+        )
+    )
+
+    download_url = remoto.get(
+        "download_url"
+    )
+
+    patch_url = remoto.get(
+        "patch_url"
+    )
+
+    checksum = remoto.get(
+        "checksum_sha256"
+    )
+
+    if not checksum:
+
+        checksum = None
+
+    file_size = remoto.get(
+        "file_size_bytes",
+        0
+    )
+
+    min_version = str(
+        remoto.get(
+            "min_version_to_patch",
+            "0.0.0"
+        )
+    )
+
+    release_notes = remoto.get(
+        "release_notes",
+        []
+    )
+
+    _log(
+        f"VERSION REMOTA: "
+        f"{version_remota}"
+    )
+
+    _log(
+        f"DOWNLOAD URL: "
+        f"{download_url}"
+    )
+
+    _log(
+        f"PATCH URL: "
+        f"{patch_url}"
+    )
+
+    _log(
+        f"STRATEGY: "
+        f"{strategy}"
+    )
+
+    _log(
+        f"FORCE UPDATE: "
+        f"{force_update}"
+    )
+
+    _log(
+        f"CHECKSUM: "
+        f"{checksum}"
+    )
+
+    _log(
+        f"FILE SIZE: "
+        f"{file_size}"
+    )
+
+    _log(
+        f"MIN VERSION PATCH: "
+        f"{min_version}"
+    )
+
+    hay_actualizacion = (
+        comparar_versiones(
+            APP_VERSION,
+            version_remota
+        ) < 0
+    )
+
+    puede_autoaplicar = (
+        comparar_versiones(
+            APP_VERSION,
+            min_version
+        ) >= 0
+    )
+
+    _log(
+        f"ACTUALIZACIÓN DISPONIBLE: "
+        f"{hay_actualizacion}"
+    )
+
+    _log(
+        f"PUEDE AUTOAPLICAR: "
+        f"{puede_autoaplicar}"
+    )
+
+    return {
+
+        "ok": True,
+
+        "hay_actualizacion":
+            hay_actualizacion,
+
+        "version_local":
+            APP_VERSION,
+
+        "version_remota":
+            version_remota,
+
+        "download_url":
+            download_url,
+
+        "patch_url":
+            patch_url,
+
+        "strategy":
+            strategy,
+
+        "force_update":
+            force_update,
+
+        "checksum_sha256":
+            checksum,
+
+        "file_size_bytes":
+            file_size,
+
+        "min_version_to_patch":
+            min_version,
+
+        "puede_autoaplicar":
+            puede_autoaplicar,
+
+        "release_notes":
+            release_notes,
+
+        "notas":
+            release_notes,
+
+        "raw":
+            remoto,
+
+    }
 
 
 # ============================================================
@@ -599,7 +900,9 @@ def _guardar_descarga(
 # ============================================================
 
 def consultar_version_remota(
-    timeout: int = 15
+    timeout: int = 15,
+    usar_cache: bool = False,
+    cache_ttl: int = VERSION_CACHE_TTL,
 ) -> Dict[str, Any]:
 
     _log("=" * 70)
@@ -616,6 +919,18 @@ def consultar_version_remota(
     )
 
     _log("=" * 70)
+
+    if usar_cache:
+
+        cache_remoto = _leer_cache_version(
+            cache_ttl=cache_ttl
+        )
+
+        if cache_remoto is not None:
+
+            return _procesar_version_remota(
+                cache_remoto
+            )
 
     resultado = _http_get(
         VERSION_URL,
@@ -666,183 +981,18 @@ def consultar_version_remota(
             texto
         )
 
-        # ----------------------------------------------------
-        # DATOS
-        # ----------------------------------------------------
+        if isinstance(
+            remoto,
+            dict
+        ):
 
-        version_remota = str(
-            remoto.get(
-                "version",
-                ""
+            _guardar_cache_version(
+                remoto
             )
-        ).strip()
 
-        strategy = str(
-            remoto.get(
-                "strategy",
-                "zip_patch"
-            )
-        ).strip()
-
-        force_update = bool(
-            remoto.get(
-                "force_update",
-                False
-            )
+        return _procesar_version_remota(
+            remoto
         )
-
-        download_url = remoto.get(
-            "download_url"
-        )
-
-        patch_url = remoto.get(
-            "patch_url"
-        )
-
-        checksum = remoto.get(
-            "checksum_sha256"
-        )
-
-        if not checksum:
-
-            checksum = None
-
-        file_size = remoto.get(
-            "file_size_bytes",
-            0
-        )
-
-        min_version = str(
-            remoto.get(
-                "min_version_to_patch",
-                "0.0.0"
-            )
-        )
-
-        release_notes = remoto.get(
-            "release_notes",
-            []
-        )
-
-        # ----------------------------------------------------
-        # LOG
-        # ----------------------------------------------------
-
-        _log(
-            f"VERSION REMOTA: "
-            f"{version_remota}"
-        )
-
-        _log(
-            f"DOWNLOAD URL: "
-            f"{download_url}"
-        )
-
-        _log(
-            f"PATCH URL: "
-            f"{patch_url}"
-        )
-
-        _log(
-            f"STRATEGY: "
-            f"{strategy}"
-        )
-
-        _log(
-            f"FORCE UPDATE: "
-            f"{force_update}"
-        )
-
-        _log(
-            f"CHECKSUM: "
-            f"{checksum}"
-        )
-
-        _log(
-            f"FILE SIZE: "
-            f"{file_size}"
-        )
-
-        _log(
-            f"MIN VERSION PATCH: "
-            f"{min_version}"
-        )
-
-        # ----------------------------------------------------
-        # COMPARAR
-        # ----------------------------------------------------
-
-        hay_actualizacion = (
-            comparar_versiones(
-                APP_VERSION,
-                version_remota
-            ) < 0
-        )
-
-        puede_autoaplicar = (
-            comparar_versiones(
-                APP_VERSION,
-                min_version
-            ) >= 0
-        )
-
-        _log(
-            f"ACTUALIZACIÓN DISPONIBLE: "
-            f"{hay_actualizacion}"
-        )
-
-        _log(
-            f"PUEDE AUTOAPLICAR: "
-            f"{puede_autoaplicar}"
-        )
-
-        return {
-
-            "ok": True,
-
-            "hay_actualizacion":
-                hay_actualizacion,
-
-            "version_local":
-                APP_VERSION,
-
-            "version_remota":
-                version_remota,
-
-            "download_url":
-                download_url,
-
-            "patch_url":
-                patch_url,
-
-            "strategy":
-                strategy,
-
-            "force_update":
-                force_update,
-
-            "checksum_sha256":
-                checksum,
-
-            "file_size_bytes":
-                file_size,
-
-            "min_version_to_patch":
-                min_version,
-
-            "puede_autoaplicar":
-                puede_autoaplicar,
-
-            "release_notes":
-                release_notes,
-
-            "notas":
-                release_notes,
-
-            "raw":
-                remoto,
-
-        }
 
     except Exception as e:
 

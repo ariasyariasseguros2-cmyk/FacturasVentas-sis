@@ -55,6 +55,8 @@ class LoginWindow(tk.Tk):
         self._actualizacion_verificada = False
         self._actualizacion_en_proceso = False
         self._conectando_bd = False
+        self._conexion_verificada = False
+        self._conexion_disponible = False
 
         # ====================================================
         # DATOS ACTUALIZACIÓN
@@ -93,7 +95,7 @@ class LoginWindow(tk.Tk):
 
         self.after(
             300,
-            self._iniciar_verificacion_actualizacion,
+            self._iniciar_validaciones_inicio,
         )
 
     # ========================================================
@@ -401,6 +403,22 @@ class LoginWindow(tk.Tk):
             )
 
     # ========================================================
+    # INICIO
+    # ========================================================
+
+    def _iniciar_validaciones_inicio(self):
+
+        if self._cerrando:
+            return
+
+        self.var_estado.set(
+            "VERIFICANDO ACTUALIZACIONES..."
+        )
+
+        self._iniciar_verificacion_actualizacion()
+        self._verificar_conexion_bd()
+
+    # ========================================================
     # ACTUALIZACIONES
     # ========================================================
 
@@ -431,7 +449,8 @@ class LoginWindow(tk.Tk):
             )
 
             resultado = consultar_version_remota(
-                timeout=15
+                timeout=5,
+                usar_cache=True,
             )
 
             print(
@@ -524,11 +543,14 @@ class LoginWindow(tk.Tk):
 
         self._actualizacion_verificada = True
 
-        self.var_estado.set(
-            "Versión actualizada. Verificando conexión..."
-        )
+        if self._conexion_disponible:
+            self._marcar_sistema_listo()
+            return
 
-        self._verificar_conexion_bd()
+        if not self._conexion_verificada:
+            self.var_estado.set(
+                "Actualización verificada. Verificando conexión..."
+            )
 
     # ========================================================
     # ERROR ACTUALIZACIÓN
@@ -548,11 +570,14 @@ class LoginWindow(tk.Tk):
 
         self._actualizacion_verificada = True
 
-        self.var_estado.set(
-            "No se pudo verificar actualización. Verificando conexión..."
-        )
+        if self._conexion_disponible:
+            self._marcar_sistema_listo()
+            return
 
-        self._verificar_conexion_bd()
+        if not self._conexion_verificada:
+            self.var_estado.set(
+                "No se pudo verificar actualización. Verificando conexión..."
+            )
 
     # ========================================================
     # ACTUALIZACIÓN DISPONIBLE
@@ -591,11 +616,12 @@ class LoginWindow(tk.Tk):
 
             self._actualizacion_verificada = True
 
-            self.var_estado.set(
-                "Modo desarrollo. Verificando conexión..."
-            )
-
-            self._verificar_conexion_bd()
+            if self._conexion_disponible:
+                self._marcar_sistema_listo()
+            elif not self._conexion_verificada:
+                self.var_estado.set(
+                    "Modo desarrollo. Verificando conexión..."
+                )
 
             return
 
@@ -929,9 +955,10 @@ class LoginWindow(tk.Tk):
 
         self._conectando_bd = True
 
-        self.var_estado.set(
-            "Verificando conexión a la base de datos..."
-        )
+        if self._actualizacion_verificada:
+            self.var_estado.set(
+                "Verificando conexión a la base de datos..."
+            )
 
         threading.Thread(
             target=self._hilo_verificar_bd,
@@ -1021,24 +1048,20 @@ class LoginWindow(tk.Tk):
     ):
 
         self._conectando_bd = False
+        self._conexion_verificada = True
+        self._conexion_disponible = bool(conectado)
 
         if self._cerrando:
             return
 
         if conectado:
 
-            self.var_estado.set(
-                "Sistema listo. Inicie sesión."
-            )
-
-            self._actualizacion_verificada = True
-
-            self._habilitar_login(True)
-
-            try:
-                self.entry_usuario.focus_set()
-            except Exception:
-                pass
+            if self._actualizacion_verificada:
+                self._marcar_sistema_listo()
+            else:
+                self.var_estado.set(
+                    "Conexión lista. Verificando actualizaciones..."
+                )
 
         else:
 
@@ -1063,6 +1086,26 @@ class LoginWindow(tk.Tk):
                 ),
                 parent=self,
             )
+
+    # ========================================================
+    # SISTEMA LISTO
+    # ========================================================
+
+    def _marcar_sistema_listo(self):
+
+        if self._cerrando:
+            return
+
+        self.var_estado.set(
+            "Sistema listo. Inicie sesión."
+        )
+
+        self._habilitar_login(True)
+
+        try:
+            self.entry_usuario.focus_set()
+        except Exception:
+            pass
 
     # ========================================================
     # LOGIN
